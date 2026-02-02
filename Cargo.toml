@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/standx-point-adapter",
+]
+[workspace.dependencies]
+standx-point-adapter = { path = "crates/standx-point-adapter" }
