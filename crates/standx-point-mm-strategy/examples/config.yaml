@@ -1,0 +1,44 @@
+# Example configuration for standx-mm-strategy
+
+# Single task example
+tasks:
+  - id: "task-1"
+    symbol: "BTC-USD"
+    credentials:
+      jwt_token: "your-jwt-token-here"
+      signing_key: "your-ed25519-private-key-base64"
+    risk:
+      level: "conservative"
+      max_position_usd: "50000"
+      price_jump_threshold_bps: 5
+    sizing:
+      base_qty: "0.1"
+      tiers: 2
+
+# Multi-task example (uncomment to use)
+# tasks:
+#   - id: "btc-task"
+#     symbol: "BTC-USD"
+#     credentials:
+#       jwt_token: "jwt-for-account-1"
+#       signing_key: "key-for-account-1"
+#     risk:
+#       level: "conservative"
+#       max_position_usd: "50000"
+#       price_jump_threshold_bps: 5
+#     sizing:
+#       base_qty: "0.1"
+#       tiers: 2
+#
+#   - id: "eth-task"
+#     symbol: "ETH-USD"
+#     credentials:
+#       jwt_token: "jwt-for-account-2"
+#       signing_key: "key-for-account-2"
+#     risk:
+#       level: "conservative"
+#       max_position_usd: "30000"
+#       price_jump_threshold_bps: 5
+#     sizing:
+#       base_qty: "1.0"
+#       tiers: 2
