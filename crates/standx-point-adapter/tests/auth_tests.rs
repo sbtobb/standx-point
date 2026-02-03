@@ -7,22 +7,33 @@
 
 mod common;
 
-use common::{generate_test_keypair, mock_jwt_token, setup_mock_server};
+use common::{mock_jwt_token, setup_mock_server};
 use standx_point_adapter::{AuthManager, Chain, MockWalletSigner, StandxClient, WalletSigner};
 use tokio_test::assert_ok;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, ResponseTemplate};
 
+use std::fs;
+use std::path::PathBuf;
+use uuid::Uuid;
+
+fn temp_dir() -> PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push(format!("standx-test-{}", Uuid::new_v4()));
+    fs::create_dir_all(&path).unwrap();
+    path
+}
+
 #[tokio::test]
 async fn test_auth_manager_creation() {
     let client = assert_ok!(StandxClient::new());
-    let auth_manager = AuthManager::new(client);
-    let (public_key, secret_key) = generate_test_keypair();
+    let dir = temp_dir();
+    let auth_manager = AuthManager::new_with_key_dir(client, &dir);
 
     assert!(auth_manager.jwt_manager().is_expired());
-    assert!(!auth_manager.signer().public_key_base58().is_empty());
-    assert_eq!(public_key.len(), 32);
-    assert_eq!(secret_key.len(), 32);
+    assert!(auth_manager.list_stored_accounts().is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[tokio::test]
@@ -40,7 +51,8 @@ async fn test_mock_wallet_signer() {
 async fn test_prepare_signin_wiremock_scaffold() {
     let server = setup_mock_server().await;
     let client = assert_ok!(StandxClient::new());
-    let auth_manager = AuthManager::new(client);
+    let dir = temp_dir();
+    let auth_manager = AuthManager::new_with_key_dir(client, &dir);
 
     let expected_signed_data = mock_jwt_token();
     let response_body = serde_json::json!({
@@ -53,9 +65,14 @@ async fn test_prepare_signin_wiremock_scaffold() {
         .mount(&server)
         .await;
 
-    let request_id = auth_manager.signer().public_key_base58();
+    let wallet_address = "0x1234567890abcdef";
+    let request_id = auth_manager
+        .key_manager()
+        .get_or_create_signer(wallet_address)
+        .unwrap()
+        .public_key_base58();
     let body = serde_json::json!({
-        "address": "0x1234567890abcdef",
+        "address": wallet_address,
         "requestId": request_id,
     });
 
@@ -68,4 +85,6 @@ async fn test_prepare_signin_wiremock_scaffold() {
         payload.get("signedData").and_then(|value| value.as_str()),
         Some(expected_signed_data.as_str())
     );
+
+    fs::remove_dir_all(dir).unwrap();
 }

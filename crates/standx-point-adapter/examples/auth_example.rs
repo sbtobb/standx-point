@@ -30,10 +30,15 @@ async fn main() {
     println!("✓ HTTP client created");
     
     // Step 2: Create auth manager
-    // This automatically generates an Ed25519 keypair for request signing
-    let mut auth_manager = AuthManager::new(client);
-    println!("✓ Auth manager created with Ed25519 signer");
-    println!("  Request ID (base58): {}", auth_manager.signer().public_key_base58());
+    // This uses PersistentKeyManager to manage Ed25519 signers for different addresses
+    let auth_manager = AuthManager::new(client);
+    println!("✓ Auth manager created");
+
+    // Show request ID (Ed25519 public key) for a test address
+    let test_address = "0x0000000000000000000000000000000000000000";
+    if let Ok(signer) = auth_manager.key_manager().get_or_create_signer(test_address) {
+        println!("  Example Request ID for {}: {}", test_address, signer.public_key_base58());
+    }
     
     // Step 3-5: Authenticate with wallet
     // In a real implementation, you would:

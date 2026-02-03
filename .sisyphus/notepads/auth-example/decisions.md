@@ -1,0 +1,1 @@
+- Chose to use Result<(), Box<dyn std::error::Error>> for the example to match crate style and avoid unnecessary dependencies like anyhow.
