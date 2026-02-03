@@ -17,8 +17,14 @@ impl StandxClient {
     /// POST /api/new_order
     /// Requires: Authorization header + body signature headers
     pub async fn new_order(&self, req: NewOrderRequest) -> Result<NewOrderResponse> {
-        let _ = req;
-        todo!("Implement HTTP POST for new_order with body signature")
+        let payload = serde_json::to_string(&req)?;
+        let timestamp = crate::http::RequestSigner::timestamp_millis();
+
+        let (builder, _signature) =
+            self.trading_post_with_jwt_and_signature("/api/new_order", &payload, timestamp)?;
+
+        let builder = builder.body(payload);
+        self.send_json(builder).await
     }
 
     /// Cancel an existing order
@@ -26,8 +32,17 @@ impl StandxClient {
     /// POST /api/cancel_order
     /// Requires: Authorization header + body signature headers
     pub async fn cancel_order(&self, req: CancelOrderRequest) -> Result<CancelOrderResponse> {
-        let _ = req;
-        todo!("Implement HTTP POST for cancel_order with body signature")
+        let payload = serde_json::to_string(&req)?;
+        let timestamp = crate::http::RequestSigner::timestamp_millis();
+
+        let (builder, _signature) = self.trading_post_with_jwt_and_signature(
+            "/api/cancel_order",
+            &payload,
+            timestamp,
+        )?;
+
+        let builder = builder.body(payload);
+        self.send_json(builder).await
     }
 
     /// Change leverage for a symbol
@@ -43,7 +58,16 @@ impl StandxClient {
             symbol: symbol.to_string(),
             leverage,
         };
-        let _ = req;
-        todo!("Implement HTTP POST for change_leverage with body signature")
+        let payload = serde_json::to_string(&req)?;
+        let timestamp = crate::http::RequestSigner::timestamp_millis();
+
+        let (builder, _signature) = self.trading_post_with_jwt_and_signature(
+            "/api/change_leverage",
+            &payload,
+            timestamp,
+        )?;
+
+        let builder = builder.body(payload);
+        self.send_json(builder).await
     }
 }

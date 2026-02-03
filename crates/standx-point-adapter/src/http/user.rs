@@ -9,6 +9,7 @@
 
 use crate::http::{Result, StandxClient};
 use crate::types::{Balance, OrderStatus, PaginatedOrders, Position};
+use reqwest::Method;
 
 impl StandxClient {
     /// Query user orders with optional filters
@@ -41,7 +42,8 @@ impl StandxClient {
             format!("/api/query_orders?{}", params.join("&"))
         };
 
-        todo!("Implement HTTP GET for query_orders with JWT auth: {endpoint}")
+        let builder = self.trading_request_with_jwt(Method::GET, &endpoint)?;
+        self.send_json(builder).await
     }
 
     /// Query open orders for a symbol
@@ -54,7 +56,8 @@ impl StandxClient {
             "/api/query_open_orders".to_string()
         };
 
-        todo!("Implement HTTP GET for query_open_orders with JWT auth: {endpoint}")
+        let builder = self.trading_request_with_jwt(Method::GET, &endpoint)?;
+        self.send_json(builder).await
     }
 
     /// Query user positions
@@ -67,7 +70,8 @@ impl StandxClient {
             "/api/query_positions".to_string()
         };
 
-        todo!("Implement HTTP GET for query_positions with JWT auth: {endpoint}")
+        let builder = self.trading_request_with_jwt(Method::GET, &endpoint)?;
+        self.send_json(builder).await
     }
 
     /// Query user balance
@@ -75,14 +79,13 @@ impl StandxClient {
     /// GET /api/query_balance
     pub async fn query_balance(&self) -> Result<Balance> {
         let endpoint = "/api/query_balance";
-        todo!("Implement HTTP GET for query_balance with JWT auth: {endpoint}")
+        let builder = self.trading_request_with_jwt(Method::GET, endpoint)?;
+        self.send_json(builder).await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Tests will be implemented once HTTP client methods are ready
 
     #[tokio::test]
