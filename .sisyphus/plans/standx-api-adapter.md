@@ -246,9 +246,9 @@ Parallel Speedup: ~35% faster than sequential
 - **Blocks**: All tasks with tests
 
 **Acceptance Criteria**:
-- [ ] `cargo test` 命令可执行
-- [ ] `cargo test` 显示测试框架正常（0 tests run 但无错误）
-- [ ] 依赖 `tokio-test`, `wiremock`, `rstest` 已安装
+- [x] `cargo test` 命令可执行
+- [x] `cargo test` 显示测试框架正常（0 tests run 但无错误）
+- [x] 依赖 `tokio-test`, `wiremock`, `rstest` 已安装
 
 **Commit**: YES
 - Message: `chore(adapter): setup test infrastructure`
@@ -302,9 +302,9 @@ rstest = "0.24"
 - **Blocked By**: None
 
 **Acceptance Criteria**:
-- [ ] `cargo check` 通过（无代码但依赖解析成功）
-- [ ] 目录结构创建完成
-- [ ] 模块声明正确（无编译错误）
+- [x] `cargo check` 通过（无代码但依赖解析成功）
+- [x] 目录结构创建完成
+- [x] 模块声明正确（无编译错误）
 
 **Commit**: YES
 - Message: `chore(adapter): setup crate structure and dependencies`
@@ -346,9 +346,9 @@ rstest = "0.24"
 - https://docs.standx.com/standx-api/perps-reference - 枚举值完整列表
 
 **Acceptance Criteria**:
-- [ ] 所有 v1 必需端点涉及的类型已定义
-- [ ] 类型可通过 `cargo check` 编译
-- [ ] 每个类型有基本的 serde 测试
+- [x] 所有 v1 必需端点涉及的类型已定义
+- [x] 类型可通过 `cargo check` 编译
+- [x] 每个类型有基本的 serde 测试
 
 **Commit**: YES
 - Message: `feat(types): define core types and enums`
@@ -395,10 +395,10 @@ impl Ed25519Signer {
 - **Blocked By**: None
 
 **Acceptance Criteria**:
-- [ ] 密钥生成可重复测试
-- [ ] 签名可被验证
-- [ ] base58 编码与 API 示例一致
-- [ ] 单元测试覆盖所有方法
+- [x] 密钥生成可重复测试
+- [x] 签名可被验证
+- [x] base58 编码与 API 示例一致
+- [x] 单元测试覆盖所有方法
 
 **Commit**: YES
 - Message: `feat(auth): implement Ed25519 signer`
@@ -446,9 +446,9 @@ pub struct Credentials {
 - **Blocked By**: Task 1, 2
 
 **Acceptance Criteria**:
-- [ ] 客户端可构建
-- [ ] 可通过 wiremock 测试基础 HTTP 调用
-- [ ] 支持自定义超时配置
+- [x] 客户端可构建
+- [x] 可通过 wiremock 测试基础 HTTP 调用
+- [x] 支持自定义超时配置
 
 **Commit**: YES
 - Message: `feat(http): implement base client structure`
@@ -486,10 +486,10 @@ impl StandxClient {
 - **Blocked By**: Task 4
 
 **Acceptance Criteria**:
-- [ ] 请求构建正确
-- [ ] Decimal 字符串解析正确
-- [ ] 错误响应可转换为 `StandxError`
-- [ ] 日志输出使用 tracing
+- [x] 请求构建正确
+- [x] Decimal 字符串解析正确
+- [x] 错误响应可转换为 `StandxError`
+- [x] 日志输出使用 tracing
 
 **Commit**: YES
 - Message: `feat(http): implement request/response middleware`
@@ -540,10 +540,10 @@ impl JwtManager {
 - **Blocked By**: Task 3, 4
 
 **Acceptance Criteria**:
-- [ ] Token 可存储和获取
-- [ ] 过期时间检查准确
-- [ ] 线程安全（Arc<RwLock>）
-- [ ] 单元测试覆盖
+- [x] Token 可存储和获取
+- [x] 过期时间检查准确
+- [x] 线程安全（Arc<RwLock>）
+- [x] 单元测试覆盖
 
 **Commit**: YES
 - Message: `feat(auth): implement JWT manager`
@@ -588,10 +588,10 @@ pub struct SolanaWalletSigner { ... }
 - **Blocked By**: Task 4
 
 **Acceptance Criteria**:
-- [ ] Trait 定义清晰
-- [ ] 示例实现可编译
-- [ ] Mock 实现可用于测试
-- [ ] 文档说明如何使用自定义实现
+- [x] Trait 定义清晰
+- [x] 示例实现可编译
+- [x] Mock 实现可用于测试
+- [x] 文档说明如何使用自定义实现
 
 **Commit**: YES
 - Message: `feat(auth): define WalletSigner trait with examples`
@@ -645,10 +645,10 @@ impl AuthManager {
 - **Blocks**: Task 9, 10, 11
 
 **Acceptance Criteria**:
-- [ ] 完整认证流程可通过 wiremock 测试
-- [ ] 签名数据解析正确
-- [ ] 错误处理覆盖各失败点
-- [ ] 示例代码展示完整流程
+- [x] 完整认证流程可通过 wiremock 测试
+- [x] 签名数据解析正确
+- [x] 错误处理覆盖各失败点
+- [x] 示例代码展示完整流程
 
 **Commit**: YES
 - Message: `feat(auth): implement complete authentication flow`
@@ -689,9 +689,9 @@ impl StandxClient {
 - **Blocked By**: Task 8
 
 **Acceptance Criteria**:
-- [ ] 所有端点通过 wiremock 测试
-- [ ] 响应类型正确解析
-- [ ] 错误码正确处理
+- [x] 所有端点通过 wiremock 测试
+- [x] 响应类型正确解析
+- [x] 错误码正确处理
 
 **Commit**: YES
 - Message: `feat(api): implement public endpoints`
@@ -738,9 +738,9 @@ impl RequestSigner {
 - **Blocked By**: Task 8
 
 **Acceptance Criteria**:
-- [ ] 请求体签名正确（与 API 示例一致）
-- [ ] 所有请求头正确设置（x-request-sign-version, x-request-id, x-request-timestamp, x-request-signature）
-- [ ] 端点通过 wiremock 测试
+- [x] 请求体签名正确（与 API 示例一致）
+- [x] 所有请求头正确设置（x-request-sign-version, x-request-id, x-request-timestamp, x-request-signature）
+- [x] 端点通过 wiremock 测试
 
 **Commit**: YES
 - Message: `feat(api): implement trading endpoints with body signature`
@@ -780,9 +780,9 @@ impl StandxClient {
 - **Blocked By**: Task 8
 
 **Acceptance Criteria**:
-- [ ] 所有端点通过 wiremock 测试
-- [ ] 分页参数正确处理
-- [ ] 响应类型正确解析
+- [x] 所有端点通过 wiremock 测试
+- [x] 分页参数正确处理
+- [x] 响应类型正确解析
 
 **Commit**: YES
 - Message: `feat(api): implement user endpoints`
@@ -830,11 +830,11 @@ impl StandxWebSocket {
 - **Blocked By**: Task 8
 
 **Acceptance Criteria**:
-- [ ] 可连接到 mock WebSocket server
-- [ ] 订阅消息格式正确
-- [ ] 接收消息可解析为正确类型
-- [ ] 自动重连机制工作（测试断开重连）
-- [ ] Ping/Pong 机制工作
+- [x] 可连接到 mock WebSocket server
+- [x] 订阅消息格式正确
+- [x] 接收消息可解析为正确类型
+- [x] 自动重连机制工作（测试断开重连）
+- [x] Ping/Pong 机制工作
 
 **Commit**: YES
 - Message: `feat(ws): implement WebSocket client`
@@ -882,10 +882,10 @@ pub enum StandxError {
 - **Blocks**: Task 14, 15
 
 **Acceptance Criteria**:
-- [ ] 所有错误变体有明确含义
-- [ ] 错误链正确（source() 返回底层错误）
-- [ ] 错误消息对开发者友好
-- [ ] 测试覆盖所有错误场景
+- [x] 所有错误变体有明确含义
+- [x] 错误链正确（source() 返回底层错误）
+- [x] 错误消息对开发者友好
+- [x] 测试覆盖所有错误场景
 
 **Commit**: YES
 - Message: `feat(error): implement comprehensive error handling`
@@ -919,10 +919,10 @@ pub enum StandxError {
 - **Blocked By**: Task 12, 13
 
 **Acceptance Criteria**:
-- [ ] 所有示例代码可编译（`cargo build --examples`）
-- [ ] README 包含快速开始指南
-- [ ] 所有公共 API 有 Rustdoc 文档
-- [ ] 文档中包含链接到 StandX API 文档
+- [x] 所有示例代码可编译（`cargo build --examples`）
+- [x] README 包含快速开始指南
+- [x] 所有公共 API 有 Rustdoc 文档
+- [x] 文档中包含链接到 StandX API 文档
 
 **Commit**: YES
 - Message: `docs: add examples and README`
@@ -955,10 +955,10 @@ pub enum StandxError {
 - **Blocked By**: Task 12, 13
 
 **Acceptance Criteria**:
-- [ ] `cargo test` 全部通过
-- [ ] 测试覆盖率 > 70%（使用 `cargo tarpaulin` 或 `cargo llvm-cov`）
-- [ ] 所有主要代码路径有测试
-- [ ] Mock 测试不依赖外部 API
+- [x] `cargo test` 全部通过
+- [x] 测试覆盖率 > 70%（使用 `cargo tarpaulin` 或 `cargo llvm-cov`）
+- [x] 所有主要代码路径有测试
+- [x] Mock 测试不依赖外部 API
 
 **Commit**: YES
 - Message: `test: add comprehensive integration tests`
