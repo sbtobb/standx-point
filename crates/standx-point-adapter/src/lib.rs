@@ -1,14 +1,43 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+/*
+[INPUT]:  Crate modules and public type definitions
+[OUTPUT]: Public StandX adapter crate surface
+[POS]:    Crate root - module wiring
+[UPDATE]: When public modules or exports change
+*/
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod auth;
+pub mod http;
+pub mod types;
+pub mod ws;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+// Re-export commonly used types from auth
+pub use auth::{
+    AuthManager,
+    Ed25519Signer,
+    JwtManager,
+    MockWalletSigner,
+    TokenData,
+    WalletSigner,
+};
+
+// Re-export commonly used types from http
+pub use http::{
+    ClientConfig,
+    Credentials,
+    RequestSigner,
+    Result,
+    StandxClient,
+    StandxError,
+};
+
+// Re-export all types
+pub use types::*;
+
+// Re-export commonly used types from ws
+pub use ws::{
+    DepthBookData,
+    OrderUpdateData,
+    PriceData,
+    StandxWebSocket,
+    WebSocketMessage,
+};
