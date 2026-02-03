@@ -5,8 +5,10 @@
 [UPDATE]: When adding new channels or changing connection logic
 */
 
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -37,6 +39,7 @@ pub enum WebSocketMessage {
 pub struct StandxWebSocket {
     message_tx: mpsc::Sender<WebSocketMessage>,
     message_rx: Option<mpsc::Receiver<WebSocketMessage>>,
+    outbound_tx: Arc<Mutex<Option<mpsc::Sender<WsMessage>>>>,
 }
 
 #[allow(dead_code)]
@@ -47,6 +50,7 @@ impl StandxWebSocket {
         Self {
             message_tx: tx,
             message_rx: Some(rx),
+            outbound_tx: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -101,22 +105,104 @@ impl StandxWebSocket {
     }
 
     async fn connect_stream(&self, url: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let _ = connect_async(url);
-        todo!("Implement WebSocket connection management")
+        let (ws_stream, _response) = connect_async(url).await?;
+        let (mut write, mut read) = ws_stream.split();
+        let (outbound_tx, mut outbound_rx) = mpsc::channel(100);
+        let outbound_state = self.outbound_tx.clone();
+
+        {
+            let mut guard = outbound_state.lock().await;
+            if guard.is_some() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "WebSocket already connected",
+                )));
+            }
+            *guard = Some(outbound_tx);
+        }
+
+        let message_tx = self.message_tx.clone();
+        let outbound_state_for_task = outbound_state.clone();
+
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    outbound = outbound_rx.recv() => {
+                        match outbound {
+                            Some(message) => {
+                                if write.send(message).await.is_err() {
+                                    break;
+                                }
+                            }
+                            None => {
+                                let _ = write.send(WsMessage::Close(None)).await;
+                                break;
+                            }
+                        }
+                    }
+                    incoming = read.next() => {
+                        match incoming {
+                            Some(Ok(WsMessage::Close(_))) => {
+                                let _ = write.send(WsMessage::Close(None)).await;
+                                break;
+                            }
+                            Some(Ok(WsMessage::Ping(_))) | Some(Ok(WsMessage::Pong(_))) => {}
+                            Some(Ok(message)) => {
+                                if let Some(parsed) = Self::parse_message(message) {
+                                    if message_tx.send(parsed).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                            Some(Err(_)) | None => {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut guard = outbound_state_for_task.lock().await;
+            *guard = None;
+        });
+
+        Ok(())
     }
 
     async fn send_subscription(
         &self,
-        _message: serde_json::Value,
+        message: serde_json::Value,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        todo!("Send subscription message")
+        let sender = {
+            let guard = self.outbound_tx.lock().await;
+            guard.clone().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotConnected, "WebSocket not connected")
+            })?
+        };
+
+        sender
+            .send(WsMessage::Text(message.to_string().into()))
+            .await
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "WebSocket send channel closed",
+                )
+            })?;
+
+        Ok(())
     }
 
-    fn parse_message(
-        &self,
-        _message: WsMessage,
-    ) -> Result<WebSocketMessage, Box<dyn std::error::Error>> {
-        todo!("Parse WebSocket message")
+    fn parse_message(message: WsMessage) -> Option<WebSocketMessage> {
+        let text: String = match message {
+            WsMessage::Text(text) => text.to_string(),
+            WsMessage::Binary(bytes) => String::from_utf8(bytes.to_vec()).ok()?,
+            _ => return Some(WebSocketMessage::Other),
+        };
+
+        Some(
+            serde_json::from_str::<WebSocketMessage>(&text).unwrap_or(WebSocketMessage::Other),
+        )
     }
 }
 

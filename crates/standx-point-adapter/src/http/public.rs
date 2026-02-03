@@ -53,7 +53,6 @@ impl StandxClient {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

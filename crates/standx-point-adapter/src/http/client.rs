@@ -1,12 +1,21 @@
 /*
-[INPUT]:  HTTP configuration (base URLs, timeouts, credentials)
+[INPUT]:  HTTP configuration (base URLs, timeouts, credentials, request signer)
 [OUTPUT]: Configured reqwest client ready for API calls
 [POS]:    HTTP layer - core client implementation
 [UPDATE]: When adding connection options or changing client behavior
 */
 
+use super::error::{Result as HttpResult, StandxError};
+use super::signature::{
+    BodySignature, RequestSigner, DEFAULT_SIGNATURE_VERSION, HEADER_REQUEST_ID,
+    HEADER_REQUEST_SIGNATURE, HEADER_REQUEST_TIMESTAMP, HEADER_REQUEST_VERSION,
+};
+use crate::auth::Ed25519Signer;
 use crate::types::Chain;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use reqwest::{Client, Method, RequestBuilder, Url};
+use serde::de::DeserializeOwned;
+use serde_json::Value as JsonValue;
 use std::time::Duration;
 
 /// Base URLs for StandX API
@@ -45,6 +54,7 @@ pub struct StandxClient {
     auth_base_url: Url,
     trading_base_url: Url,
     credentials: Option<Credentials>,
+    request_signer: Option<RequestSigner>,
 }
 
 #[allow(dead_code)]
@@ -66,6 +76,27 @@ impl StandxClient {
             auth_base_url: Url::parse(AUTH_BASE_URL)?,
             trading_base_url: Url::parse(TRADING_BASE_URL)?,
             credentials: None,
+            request_signer: None,
+        })
+    }
+
+    /// Create a new client with custom base URLs (useful for tests).
+    pub fn with_config_and_base_urls(
+        config: ClientConfig,
+        auth_base_url: &str,
+        trading_base_url: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let http_client = Client::builder()
+            .timeout(config.timeout)
+            .connect_timeout(config.connect_timeout)
+            .build()?;
+
+        Ok(Self {
+            http_client,
+            auth_base_url: Url::parse(auth_base_url)?,
+            trading_base_url: Url::parse(trading_base_url)?,
+            credentials: None,
+            request_signer: None,
         })
     }
 
@@ -74,9 +105,98 @@ impl StandxClient {
         self.credentials = Some(credentials);
     }
 
+    /// Set Ed25519 request signer for body-signature endpoints.
+    pub fn set_request_signer(&mut self, signer: Ed25519Signer) {
+        self.request_signer = Some(RequestSigner::new(signer));
+    }
+
+    /// Set credentials and request signer in one call.
+    pub fn set_credentials_and_signer(&mut self, credentials: Credentials, signer: Ed25519Signer) {
+        self.credentials = Some(credentials);
+        self.request_signer = Some(RequestSigner::new(signer));
+    }
+
     /// Get credentials if set
     pub fn credentials(&self) -> Option<&Credentials> {
         self.credentials.as_ref()
+    }
+
+    /// Get request signer if set
+    pub fn request_signer(&self) -> Option<&RequestSigner> {
+        self.request_signer.as_ref()
+    }
+
+    pub(crate) fn require_credentials(&self) -> HttpResult<&Credentials> {
+        self.credentials
+            .as_ref()
+            .ok_or_else(|| StandxError::Config("credentials not set".to_string()))
+    }
+
+    pub(crate) fn require_request_signer(&self) -> HttpResult<&RequestSigner> {
+        self.request_signer
+            .as_ref()
+            .ok_or_else(|| StandxError::Config("request signer not set".to_string()))
+    }
+
+    pub(crate) fn trading_request_with_jwt(
+        &self,
+        method: Method,
+        endpoint: &str,
+    ) -> HttpResult<RequestBuilder> {
+        let credentials = self.require_credentials()?;
+        let builder = self.trading_request(method, endpoint)?;
+        Ok(builder.header(AUTHORIZATION, format!("Bearer {}", credentials.jwt_token)))
+    }
+
+    pub(crate) fn trading_post_with_jwt_and_signature(
+        &self,
+        endpoint: &str,
+        payload: &str,
+        timestamp: u64,
+    ) -> HttpResult<(RequestBuilder, BodySignature)> {
+        let signer = self.require_request_signer()?;
+        let signature = signer.sign_payload(payload, timestamp);
+
+        let builder = self
+            .trading_request_with_jwt(Method::POST, endpoint)?
+            .header(CONTENT_TYPE, "application/json")
+            .header(HEADER_REQUEST_VERSION, DEFAULT_SIGNATURE_VERSION)
+            .header(HEADER_REQUEST_ID, signature.request_id.clone())
+            .header(HEADER_REQUEST_TIMESTAMP, signature.timestamp.to_string())
+            .header(HEADER_REQUEST_SIGNATURE, signature.signature.clone());
+
+        Ok((builder, signature))
+    }
+
+    pub(crate) async fn send_json<T: DeserializeOwned>(&self, builder: RequestBuilder) -> HttpResult<T> {
+        let response = builder.send().await?;
+        let status = response.status();
+        let body = response.text().await?;
+
+        if status.is_success() {
+            return Ok(serde_json::from_str::<T>(&body)?);
+        }
+
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(StandxError::TokenExpired);
+        }
+
+        let message = match serde_json::from_str::<JsonValue>(&body) {
+            Ok(JsonValue::Object(map)) => map
+                .get("message")
+                .and_then(|value| value.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| body.clone()),
+            _ => body.clone(),
+        };
+
+        if status == reqwest::StatusCode::FORBIDDEN
+            && message.to_ascii_lowercase().contains("signature")
+        {
+            return Err(StandxError::InvalidSignature);
+        }
+
+        Err(StandxError::api_error(status, message))
     }
 
     /// Build full URL for auth endpoints
