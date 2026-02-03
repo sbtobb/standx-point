@@ -1,0 +1,6 @@
+- `cargo check` warns about ambiguous glob re-exports for `client` from `http` and `ws` modules in `src/lib.rs`.
+- `cargo check` warns about unused `pub use client::*` in `src/http/mod.rs` (redundant with explicit re-exports).
+- `cargo test` warns about unused import `super::*` in `src/http/public.rs`.
+- `cargo check` still warns about ambiguous glob re-exports for `client` from `http` and `ws` in `src/lib.rs`.
+- rust-analyzer reports `unlinked-file` hint for `src/http/user.rs` despite `pub mod user;` in `src/http/mod.rs`.
+- `cargo test` warns about unused import `super::*` in `src/http/user.rs`.

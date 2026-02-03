@@ -1,0 +1,21 @@
+- Added core StandX API types under `crates/standx-point-adapter/src/types` with serde mappings and Decimal string handling.
+- Implemented decimal vector serde helpers for `KlineData` arrays.
+- Added `serde` and `rust_decimal` dependencies for the adapter crate.
+- Created AGENTS.md manifests for crate, src, and types folders.
+- Added `StandxError` and `Result` alias under `src/http/error.rs`.
+- Re-exported error types from `http` and crate root.
+- Added `src/http/AGENTS.md` manifest for HTTP layer.
+- Implemented base `StandxClient` with config, base URLs, and request builders in `src/http/client.rs`.
+- 补充 Ed25519Signer，实现密钥生成、签名、base58 公钥导出和单元测试，并为 `src/auth` 新增 AGENTS.md。
+- 实现 JwtManager，使用 `Arc<RwLock<Option<TokenData>>>` 进行线程安全 token 存储并提供过期检查与清理。
+- 新增 WalletSigner trait 与 MockWalletSigner，并在 auth 模块导出，包含单元测试。
+- Added `AuthManager` flow scaffolding in `src/auth/manager.rs` with prepare-signin/login/authenticate and JWT storage.
+- Exported auth manager types from `src/auth/mod.rs` and documented them in `src/auth/AGENTS.md`.
+- Added `RequestSigner` for body signatures with UUID request ids, base64-encoded Ed25519 signatures, and unit tests.
+- Added trading endpoint stubs in `src/http/trade.rs` and wired `signature`/`trade` modules in `src/http/mod.rs`.
+- Documented new HTTP modules in `src/http/AGENTS.md`.
+- 新增 `src/http/public.rs` 公共行情端点占位实现，并在 `src/http/mod.rs`/`src/http/AGENTS.md` 中注册 `public` 模块。
+- 新增 `src/ws` WebSocket 客户端占位实现与消息类型，并补充 `src/ws/AGENTS.md` 说明。
+- 完善 `StandxError`，补全重试/鉴权辅助方法与单元测试，并增强错误上下文信息。
+- 新增集成测试套件（auth/http/ws）并引入 wiremock 基础脚手架，覆盖客户端创建与认证/WS 初始化行为。
+- 添加 `tests/common/mod.rs` 共享测试工具与 `tests/AGENTS.md` 清单，保持测试目录的 Fractal Context 对齐。
