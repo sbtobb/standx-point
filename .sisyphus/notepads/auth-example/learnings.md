@@ -1,0 +1,2 @@
+- AuthManager::new_with_key_dir allows persistent storage of session keys.
+- StandxClient::new() takes no arguments and returns Result<Self, Box<dyn Error>>.
