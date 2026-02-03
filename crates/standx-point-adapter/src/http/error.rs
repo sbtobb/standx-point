@@ -51,6 +51,10 @@ pub enum StandxError {
     #[error("Configuration error: {0}")]
     Config(String),
 
+    /// Internal error or unexpected failure
+    #[error("Internal error: {0}")]
+    Internal(String),
+
     /// Rate limit exceeded
     #[error("Rate limit exceeded, retry after {retry_after}s")]
     RateLimit { retry_after: u64 },
