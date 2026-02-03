@@ -14,17 +14,33 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod cli;
+
 use standx_point_mm_strategy::{MarketDataHub, StrategyConfig, TaskManager};
 
 #[derive(Parser, Debug)]
-#[command(name = "standx-point-mm-strategy", version, about = "StandX market making strategy runner")]
+#[command(
+    name = "standx-point-mm-strategy",
+    version,
+    about = "StandX market making strategy runner"
+)]
 struct Cli {
-    #[arg(long = "config", value_name = "PATH")]
-    config_path: PathBuf,
-    #[arg(long = "log-level", value_name = "LEVEL", default_value = "info")]
+    #[command(subcommand)]
+    command: Option<Commands>,
+    #[arg(short, long, value_name = "PATH")]
+    config: Option<PathBuf>,
+    #[arg(short, long, value_name = "LEVEL", default_value = "info")]
     log_level: String,
-    #[arg(long = "dry-run")]
+    #[arg(long)]
     dry_run: bool,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Commands {
+    Init {
+        #[arg(short, long)]
+        output: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -32,13 +48,19 @@ async fn main() -> Result<()> {
     let args = Cli::parse();
     init_tracing(&args.log_level)?;
 
+    if let Some(Commands::Init { output }) = args.command {
+        return cli::init::run_init(output);
+    }
+
+    let config_path = args.config.context("config path is required for running")?;
+
     info!(
-        config_path = %args.config_path.display(),
+        config_path = %config_path.display(),
         dry_run = args.dry_run,
         "starting standx-mm-strategy"
     );
 
-    let config = load_config(&args.config_path)?;
+    let config = load_config(&config_path)?;
     info!(task_count = config.tasks.len(), "configuration loaded");
 
     if args.dry_run {
