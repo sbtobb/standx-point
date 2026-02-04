@@ -50,8 +50,21 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, storage: &Storage
         match state.sidebar_mode {
             SidebarMode::Accounts => {
                 if state.selected_index < state.accounts.len() {
-                    let account = &state.accounts[state.selected_index];
-                    render_account_details(account)
+                    let selected_account = &state.accounts[state.selected_index];
+                    // Get account by ID from the cached list
+                    if let Some(account) =
+                        state.accounts.iter().find(|a| a.id == selected_account.id)
+                    {
+                        render_account_details(account)
+                    } else {
+                        vec![
+                            Line::from(""),
+                            Line::from(vec![
+                                Span::styled("❌ ", Style::default().fg(Color::Red)),
+                                Span::styled("Account not found", Style::default().fg(Color::Red)),
+                            ]),
+                        ]
+                    }
                 } else {
                     vec![
                         Line::from(""),
@@ -64,8 +77,19 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, storage: &Storage
             }
             SidebarMode::Tasks => {
                 if state.selected_index < state.tasks.len() {
-                    let task = &state.tasks[state.selected_index];
-                    render_task_details(task)
+                    let selected_task = &state.tasks[state.selected_index];
+                    // Get task by ID from the cached list
+                    if let Some(task) = state.tasks.iter().find(|t| t.id == selected_task.id) {
+                        render_task_details(task)
+                    } else {
+                        vec![
+                            Line::from(""),
+                            Line::from(vec![
+                                Span::styled("❌ ", Style::default().fg(Color::Red)),
+                                Span::styled("Task not found", Style::default().fg(Color::Red)),
+                            ]),
+                        ]
+                    }
                 } else {
                     vec![
                         Line::from(""),
