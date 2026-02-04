@@ -1,3 +1,4 @@
+pub mod account_form;
 pub mod detail_view;
 pub mod help;
 pub mod menu_bar;
