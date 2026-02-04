@@ -8,7 +8,7 @@ use crate::app::state::{AppState, Pane, SidebarMode};
 use crate::state::storage::{Account, Storage, Task};
 
 /// Render the detail view showing account or task details
-pub fn render(frame: &mut Frame, area: Rect, state: &AppState, _storage: &Storage) {
+pub fn render(frame: &mut Frame, area: Rect, state: &AppState, storage: &Storage) {
     let block = Block::default()
         .title("Detail View")
         .borders(Borders::ALL)
