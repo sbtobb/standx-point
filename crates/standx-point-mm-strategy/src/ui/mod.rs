@@ -1,12 +1,13 @@
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::Frame;
 
 use crate::app::state::AppState;
+use crate::state::storage::Storage;
 
 pub mod components;
 
 /// Main render function - called every frame
-pub fn render(frame: &mut Frame, state: &AppState) {
+pub fn render(frame: &mut Frame, state: &AppState, storage: &Storage) {
     let area = frame.area();
 
     // Split the screen into main sections
@@ -26,8 +27,8 @@ pub fn render(frame: &mut Frame, state: &AppState) {
 
     // Render each component
     components::status_bar::render(frame, status_area, state);
-    components::sidebar::render(frame, sidebar_area, state);
-    components::detail_view::render(frame, detail_area, state);
+    components::sidebar::render(frame, sidebar_area, state, storage);
+    components::detail_view::render(frame, detail_area, state, storage);
     components::menu_bar::render(frame, menu_area, state);
 
     // Render modal on top if present
