@@ -4,10 +4,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::state::AppState;
+use crate::app::state::{AppState, Pane};
 
 /// Render the menu bar at the bottom of the screen
-pub fn render(frame: &mut Frame, area: Rect, _state: &AppState) {
+pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let menu_items = vec![
         ("F1", "Help"),
         ("F2", "Accounts"),
@@ -21,29 +21,37 @@ pub fn render(frame: &mut Frame, area: Rect, _state: &AppState) {
     ];
 
     let mut spans = vec![];
+
+    // Visual indicator for focus
+    let base_style = if state.focused_pane == Pane::Menu {
+        Style::default().bg(Color::DarkGray)
+    } else {
+        Style::default()
+    };
+
     for (i, (key, desc)) in menu_items.iter().enumerate() {
         // Add separator if not first item
         if i > 0 {
-            spans.push(Span::raw(" | "));
+            spans.push(Span::styled(" | ", base_style));
         }
 
         // Key in bold highlight color
         spans.push(Span::styled(
             *key,
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            base_style.fg(Color::Yellow).add_modifier(Modifier::BOLD),
         ));
 
         // Description in normal color
         spans.push(Span::styled(
             format!(" {}", desc),
-            Style::default().fg(Color::Gray),
+            base_style.fg(Color::Gray),
         ));
     }
 
     let line = Line::from(spans);
-    let paragraph = Paragraph::new(line).alignment(Alignment::Center);
+    let paragraph = Paragraph::new(line)
+        .alignment(Alignment::Center)
+        .style(base_style);
 
     frame.render_widget(paragraph, area);
 }

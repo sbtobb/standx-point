@@ -289,7 +289,7 @@ Phase 9: Testing (1 task)
 - [ ] Event loop structure implemented (draw → handle events → update)
 - [ ] Crossterm event reading integrated with tokio::select!
 - [ ] Key event handling skeleton (q to quit, F-keys for menus)
-- [ ] Terminal resize handling
+- [x] Terminal resize handling
 - [ ] Frame rate limiting (60 FPS target)
 
 **Commit**: YES
@@ -656,8 +656,8 @@ Phase 9: Testing (1 task)
 
 **Terminal Resize Handling:**
 - [ ] Resize event handler that recalculates all layouts
-- [ ] Minimum terminal size check (80x24)
-- [ ] If terminal too small: Display centered message "Terminal too small (need 80x24)" instead of normal UI
+- [x] Minimum terminal size check (80x24)
+- [x] If terminal too small: Display centered message "Terminal too small (need 80x24)" instead of normal UI
 - [ ] Debounced resize (don't redraw on every pixel change, throttle to 100ms)
 
 **Styling and Theming:**
@@ -1060,22 +1060,22 @@ Phase 9: Testing (1 task)
 **Acceptance Criteria:**
 
 **Global Shortcuts (Always Active):**
-- [ ] F1: Open help overlay showing all shortcuts
-- [ ] F2: Switch sidebar to Accounts mode
-- [ ] F3: Switch sidebar to Tasks mode
-- [ ] F4: Toggle credentials visibility (show/hide sensitive data)
-- [ ] q: Quit application (with confirmation if tasks running)
+- [x] F1: Open help overlay showing all shortcuts
+- [x] F2: Switch sidebar to Accounts mode
+- [x] F3: Switch sidebar to Tasks mode
+- [x] F4: Toggle credentials visibility (show/hide sensitive data)
+- [x] q: Quit application (with confirmation if tasks running)
 - [ ] Ctrl+C: Force quit (same as 'q' but immediate)
 
 **Navigation Shortcuts (Normal Mode):**
-- [ ] j or ↓: Move selection down in sidebar
-- [ ] k or ↑: Move selection up in sidebar
-- [ ] h or ←: Focus sidebar (when in detail view)
-- [ ] l or →: Focus detail view (when in sidebar)
-- [ ] gg: Jump to first item in sidebar
-- [ ] G: Jump to last item in sidebar
+- [x] j or ↓: Move selection down in sidebar
+- [x] k or ↑: Move selection up in sidebar
+- [x] h or ←: Focus sidebar (when in detail view)
+- [x] l or →: Focus detail view (when in sidebar)
+- [x] gg: Jump to first item in sidebar
+- [x] G: Jump to last item in sidebar
 - [ ] Enter: Open selected item in detail view
-- [ ] Tab: Cycle focus between sidebar → detail view → menu bar
+- [x] Tab: Cycle focus between sidebar → detail view → menu bar
 
 **Account Mode Shortcuts (F2 active):**
 - [ ] n: New account (open create form)
@@ -1104,14 +1104,14 @@ Phase 9: Testing (1 task)
 - [ ] Help shows all shortcuts organized by category (Global, Navigation, Account, Task, Form)
 - [ ] Each shortcut shows key combination and description
 - [ ] Help is scrollable if terminal is small
-- [ ] Press F1 again or Esc to close help
+- [x] Press F1 again or Esc to close help
 - [ ] Context-sensitive help: when in a form, F1 shows form-specific help
 
 **Visual Feedback:**
-- [ ] Status bar shows "Key pressed: j" briefly when keys are pressed (flash for 500ms)
+- [x] Status bar shows "Key pressed: j" briefly when keys are pressed (flash for 500ms)
 - [ ] Invalid key combinations show error message in status bar (e.g., "Cannot start task: already running")
 - [ ] Mode indicator in status bar: "-- NORMAL --", "-- INSERT --", "-- FORM --"
-- [ ] When waiting for async operation (e.g., task starting), show spinner in status bar
+- [x] When waiting for async operation (e.g., task starting), show spinner in status bar
 
 **Commit**: YES
 - Message: `feat(navigation): implement keyboard shortcuts and help system`

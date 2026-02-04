@@ -39,6 +39,9 @@ pub enum AppEvent {
 
     /// Application should shut down
     Shutdown,
+
+    /// Terminal resize event (width, height)
+    Resize(u16, u16),
 }
 
 /// Task states for status updates

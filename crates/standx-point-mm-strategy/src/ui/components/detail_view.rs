@@ -8,14 +8,14 @@ use crate::app::state::{AppState, Pane, SidebarMode};
 use crate::state::storage::{Account, Storage, Task};
 
 /// Render the detail view showing account or task details
-pub fn render(frame: &mut Frame, area: Rect, state: &AppState, storage: &Storage) {
+pub fn render(frame: &mut Frame, area: Rect, state: &AppState, _storage: &Storage) {
     let block = Block::default()
         .title("Detail View")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Blue));
 
-    // If sidebar is focused, show selection hint
-    let content = if state.focused_pane == Pane::Sidebar {
+    // If sidebar or menu is focused, show selection hint
+    let content = if state.focused_pane != Pane::Detail {
         vec![
             Line::from(""),
             Line::from(vec![
@@ -55,7 +55,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, storage: &Storage
                     if let Some(account) =
                         state.accounts.iter().find(|a| a.id == selected_account.id)
                     {
-                        render_account_details(account)
+                        render_account_details(account, state.show_credentials)
                     } else {
                         vec![
                             Line::from(""),
@@ -112,9 +112,11 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, storage: &Storage
 }
 
 /// Render account details
-fn render_account_details(account: &Account) -> Vec<Line<'_>> {
-    // Mask sensitive fields
-    let masked_jwt = if account.jwt_token.len() > 8 {
+fn render_account_details(account: &Account, show_credentials: bool) -> Vec<Line<'_>> {
+    // Mask sensitive fields if needed
+    let displayed_jwt = if show_credentials {
+        account.jwt_token.clone()
+    } else if account.jwt_token.len() > 8 {
         format!(
             "{}...{}",
             &account.jwt_token[..4],
@@ -124,7 +126,9 @@ fn render_account_details(account: &Account) -> Vec<Line<'_>> {
         "****".to_string()
     };
 
-    let masked_signing_key = if account.signing_key.len() > 8 {
+    let displayed_signing_key = if show_credentials {
+        account.signing_key.clone()
+    } else if account.signing_key.len() > 8 {
         format!(
             "{}...{}",
             &account.signing_key[..4],
@@ -156,11 +160,11 @@ fn render_account_details(account: &Account) -> Vec<Line<'_>> {
         ]),
         Line::from(vec![
             Span::styled("   JWT Token: ", Style::default().fg(Color::Gray)),
-            Span::styled(masked_jwt, Style::default().fg(Color::Yellow)),
+            Span::styled(displayed_jwt, Style::default().fg(Color::Yellow)),
         ]),
         Line::from(vec![
             Span::styled("   Signing Key: ", Style::default().fg(Color::Gray)),
-            Span::styled(masked_signing_key, Style::default().fg(Color::Yellow)),
+            Span::styled(displayed_signing_key, Style::default().fg(Color::Yellow)),
         ]),
         Line::from(vec![
             Span::styled("   Created At: ", Style::default().fg(Color::Gray)),

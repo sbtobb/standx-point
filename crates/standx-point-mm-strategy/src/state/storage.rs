@@ -138,6 +138,26 @@ impl Storage {
         })
     }
 
+    /// Test-only constructor that creates storage in a specific directory.
+    /// Creates the directory if it doesn't exist.
+    #[cfg(test)]
+    pub async fn new_in_dir(data_dir: &Path) -> Result<Self> {
+        fs::create_dir_all(data_dir).await?;
+
+        let accounts_path = data_dir.join("accounts.json");
+        let tasks_path = data_dir.join("tasks.json");
+
+        let accounts = Self::load_accounts(&accounts_path).await?;
+        let tasks = Self::load_tasks(&tasks_path).await?;
+
+        Ok(Self {
+            accounts_path,
+            tasks_path,
+            accounts: Mutex::new(accounts),
+            tasks: Mutex::new(tasks),
+        })
+    }
+
     async fn load_accounts(path: &Path) -> Result<HashMap<String, Account>> {
         if !path.exists() {
             return Ok(HashMap::new());

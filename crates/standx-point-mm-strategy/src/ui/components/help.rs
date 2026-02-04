@@ -44,6 +44,10 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::raw("Focus detail view"),
         ]),
         Line::from(vec![
+            Span::styled("  Tab      ", Style::default().fg(Color::Cyan)),
+            Span::raw("Cycle focus"),
+        ]),
+        Line::from(vec![
             Span::styled("  Enter    ", Style::default().fg(Color::Cyan)),
             Span::raw("Select / Confirm"),
         ]),
@@ -66,6 +70,10 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  F3       ", Style::default().fg(Color::Cyan)),
             Span::raw("Switch to Tasks"),
+        ]),
+        Line::from(vec![
+            Span::styled("  F4       ", Style::default().fg(Color::Cyan)),
+            Span::raw("Toggle credentials visibility"),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -102,7 +110,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Press any key to close this help...",
+            "Press F1 or Esc to close...",
             Style::default()
                 .fg(Color::Gray)
                 .add_modifier(Modifier::ITALIC),

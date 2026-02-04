@@ -42,6 +42,17 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, market_data: &Mar
         ),
     ];
 
+    // Add spinner if active
+    if state.spinner_ticks > 0 {
+        let spinner_frames = ['|', '/', '-', '\\'];
+        let current_frame = spinner_frames[state.spinner_frame as usize];
+        title_spans.push(Span::raw(" | "));
+        title_spans.push(Span::styled(
+            format!("Busy: {}", current_frame),
+            Style::default().fg(Color::Red),
+        ));
+    }
+
     // Add price information
     title_spans.push(Span::raw(" | "));
     title_spans.push(Span::styled(
@@ -85,8 +96,14 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, market_data: &Mar
 
     lines.push(Line::from(title_spans));
 
-    // Status message line
-    if let Some(ref msg) = state.status_message {
+    // Status message or keypress flash
+    if let Some((ref msg, _)) = state.keypress_flash {
+        let flash_spans = vec![
+            Span::styled("Key: ", Style::default().fg(Color::Yellow)),
+            Span::styled(msg.clone(), Style::default().fg(Color::White)),
+        ];
+        lines.push(Line::from(flash_spans));
+    } else if let Some(ref msg) = state.status_message {
         let status_spans = vec![
             Span::styled("Status: ", Style::default().fg(Color::Blue)),
             Span::styled(msg.clone(), Style::default().fg(Color::White)),
