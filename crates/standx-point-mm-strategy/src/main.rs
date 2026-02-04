@@ -5,11 +5,11 @@
 [UPDATE]: When changing CLI flags, startup flow, or shutdown handling
 */
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ratatui::crossterm::ExecutableCommand;
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io::stdout;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -143,9 +143,7 @@ fn init_tracing(log_level: &str) -> Result<()> {
 }
 
 fn load_config(path: &PathBuf) -> Result<StrategyConfig> {
-    let path_str = path
-        .to_str()
-        .context("config path must be valid utf-8")?;
+    let path_str = path.to_str().context("config path must be valid utf-8")?;
     StrategyConfig::from_file(path_str).context("load config")
 }
 
@@ -162,7 +160,7 @@ fn setup_signal_handlers(shutdown: CancellationToken) {
 
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
 
         let shutdown_clone = shutdown.clone();
         tokio::spawn(async move {

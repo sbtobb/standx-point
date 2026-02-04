@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use console::style;
-use dialoguer::{theme::ColorfulTheme, Input, Select};
+use dialoguer::{Input, Select, theme::ColorfulTheme};
 use std::path::PathBuf;
 
 use standx_point_mm_strategy::config::{

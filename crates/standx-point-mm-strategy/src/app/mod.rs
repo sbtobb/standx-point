@@ -5,11 +5,11 @@ use crate::app::event::AppEvent;
 use crate::app::state::{AppMode, AppState, Pane};
 use crate::state::storage::Storage;
 use anyhow::Result;
-use ratatui::crossterm::event::{self as crossterm_event, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::DefaultTerminal;
+use ratatui::crossterm::event::{self as crossterm_event, Event, KeyCode, KeyEvent, KeyEventKind};
 use std::io;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 const TICK_RATE: u64 = 250;
 
@@ -67,7 +67,9 @@ impl App {
 
         match event {
             AppEvent::Key(key) => match state.mode {
-                AppMode::Normal => Self::handle_normal_mode(&mut state, key, &mut self.should_exit).await?,
+                AppMode::Normal => {
+                    Self::handle_normal_mode(&mut state, key, &mut self.should_exit).await?
+                }
                 AppMode::Insert => Self::handle_insert_mode(&mut state, key).await?,
                 AppMode::Dialog => Self::handle_dialog_mode(&mut state, key).await?,
             },
@@ -122,10 +124,14 @@ impl App {
                 state.show_help().await?;
             }
             F(2) => {
-                state.switch_sidebar_mode(crate::app::state::SidebarMode::Accounts).await?;
+                state
+                    .switch_sidebar_mode(crate::app::state::SidebarMode::Accounts)
+                    .await?;
             }
             F(3) => {
-                state.switch_sidebar_mode(crate::app::state::SidebarMode::Tasks).await?;
+                state
+                    .switch_sidebar_mode(crate::app::state::SidebarMode::Tasks)
+                    .await?;
             }
             _ => {}
         }

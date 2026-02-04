@@ -65,7 +65,8 @@ impl MarketDataHub {
     }
 
     fn new_internal(auto_connect: bool) -> Self {
-        let (connection_state, _rx) = watch::channel(ConnectionState::Disconnected { retry_count: 0 });
+        let (connection_state, _rx) =
+            watch::channel(ConnectionState::Disconnected { retry_count: 0 });
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
 
         Self {
@@ -233,7 +234,9 @@ impl MarketDataHubWorker {
                         StreamExit::Shutdown => {
                             drop(rx);
                             drop(ws);
-                            let _ = self.connection_state.send(ConnectionState::Disconnected { retry_count });
+                            let _ = self
+                                .connection_state
+                                .send(ConnectionState::Disconnected { retry_count });
                             break 'run;
                         }
                         StreamExit::Disconnected => {
@@ -284,7 +287,9 @@ impl MarketDataHubWorker {
         }
     }
 
-    async fn connect_once(&self) -> Result<(StandxWebSocket, mpsc::Receiver<WebSocketMessage>), String> {
+    async fn connect_once(
+        &self,
+    ) -> Result<(StandxWebSocket, mpsc::Receiver<WebSocketMessage>), String> {
         let mut ws = StandxWebSocket::new();
 
         info!(ws_url = %self.ws_url, "Connecting to StandX market WebSocket");
@@ -535,7 +540,10 @@ mod tests {
         let hub = MarketDataHub::new_for_test();
 
         let mut rx = hub.subscribe_connection_state();
-        assert_eq!(&*rx.borrow(), &ConnectionState::Disconnected { retry_count: 0 });
+        assert_eq!(
+            &*rx.borrow(),
+            &ConnectionState::Disconnected { retry_count: 0 }
+        );
 
         hub.connection_state.send(ConnectionState::Paused).unwrap();
         rx.changed().await.unwrap();

@@ -13,9 +13,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use rust_decimal::Decimal;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -237,14 +237,16 @@ impl OrderExecutor for StandxClient {
     fn new_order(
         &self,
         req: NewOrderRequest,
-    ) -> Pin<Box<dyn Future<Output = standx_point_adapter::Result<NewOrderResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = standx_point_adapter::Result<NewOrderResponse>> + Send + '_>>
+    {
         Box::pin(async move { StandxClient::new_order(self, req).await })
     }
 
     fn cancel_order(
         &self,
         req: CancelOrderRequest,
-    ) -> Pin<Box<dyn Future<Output = standx_point_adapter::Result<CancelOrderResponse>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = standx_point_adapter::Result<CancelOrderResponse>> + Send + '_>>
+    {
         Box::pin(async move { StandxClient::cancel_order(self, req).await })
     }
 }
@@ -348,7 +350,8 @@ impl MarketMakingStrategy {
         refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         // Try to quote immediately using the current snapshot.
-        self.refresh_from_latest(executor, tokio::time::Instant::now()).await?;
+        self.refresh_from_latest(executor, tokio::time::Instant::now())
+            .await?;
 
         loop {
             tokio::select! {
@@ -686,7 +689,11 @@ impl MarketMakingStrategy {
             Ok(resp) => {
                 let mut tracker = self.order_tracker.lock().await;
                 let _ = tracker.mark_failed(&cl_ord_id, format!("new_order code={}", resp.code));
-                return Err(anyhow!("new_order returned code={} message={}", resp.code, resp.message));
+                return Err(anyhow!(
+                    "new_order returned code={} message={}",
+                    resp.code,
+                    resp.message
+                ));
             }
             Err(err) => {
                 let mut tracker = self.order_tracker.lock().await;
@@ -767,19 +774,11 @@ fn initial_symbol_price(symbol: &str) -> SymbolPrice {
 }
 
 fn decimal_max(a: Decimal, b: Decimal) -> Decimal {
-    if a >= b {
-        a
-    } else {
-        b
-    }
+    if a >= b { a } else { b }
 }
 
 fn decimal_min(a: Decimal, b: Decimal) -> Decimal {
-    if a <= b {
-        a
-    } else {
-        b
-    }
+    if a <= b { a } else { b }
 }
 
 fn price_at_bps(mark_price: Decimal, side: Side, bps: Decimal) -> Decimal {
@@ -834,9 +833,8 @@ mod tests {
         fn new_order(
             &self,
             req: NewOrderRequest,
-        ) -> Pin<
-            Box<dyn Future<Output = standx_point_adapter::Result<NewOrderResponse>> + Send + '_>,
-        > {
+        ) -> Pin<Box<dyn Future<Output = standx_point_adapter::Result<NewOrderResponse>> + Send + '_>>
+        {
             Box::pin(async move {
                 self.new_orders.lock().await.push(req);
                 Ok(NewOrderResponse {
@@ -1180,13 +1178,8 @@ mod tests {
             StrategyMode::aggressive_default(),
         );
 
-        strategy.risk_manager = RiskManager::with_limits(
-            dec("1"),
-            Decimal::ZERO,
-            dec("1000"),
-            u32::MAX,
-            dec("1000"),
-        );
+        strategy.risk_manager =
+            RiskManager::with_limits(dec("1"), Decimal::ZERO, dec("1000"), u32::MAX, dec("1000"));
         let t0 = std::time::Instant::now() - std::time::Duration::from_millis(500);
         strategy.risk_manager.record_price(t0, dec("100"));
 

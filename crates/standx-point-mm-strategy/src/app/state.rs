@@ -39,10 +39,7 @@ pub enum ModalType {
     /// Help overlay
     Help,
     /// Confirmation dialog with message
-    Confirm { 
-        title: String, 
-        message: String, 
-    },
+    Confirm { title: String, message: String },
 }
 
 /// Main application state

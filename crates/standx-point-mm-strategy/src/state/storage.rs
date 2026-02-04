@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -121,15 +121,15 @@ impl Storage {
         let data_dir = dirs::data_dir()
             .ok_or_else(|| anyhow!("Could not determine data directory"))?
             .join("standx-mm");
-        
+
         fs::create_dir_all(&data_dir).await?;
-        
+
         let accounts_path = data_dir.join("accounts.json");
         let tasks_path = data_dir.join("tasks.json");
-        
+
         let accounts = Self::load_accounts(&accounts_path).await?;
         let tasks = Self::load_tasks(&tasks_path).await?;
-        
+
         Ok(Self {
             accounts_path,
             tasks_path,
@@ -182,10 +182,13 @@ impl Storage {
         let tasks = self.tasks.lock().await;
         let has_tasks = tasks.values().any(|t| t.account_id == id);
         if has_tasks {
-            return Err(anyhow!("Cannot delete account '{}' because it has associated tasks", id));
+            return Err(anyhow!(
+                "Cannot delete account '{}' because it has associated tasks",
+                id
+            ));
         }
         drop(tasks);
-        
+
         let mut accounts = self.accounts.lock().await;
         if accounts.remove(id).is_none() {
             return Err(anyhow!("Account '{}' not found", id));
@@ -263,7 +266,7 @@ impl Storage {
     async fn save_accounts(&self, accounts: &HashMap<String, Account>) -> Result<()> {
         let list: Vec<_> = accounts.values().cloned().collect();
         let content = serde_json::to_string_pretty(&list)?;
-        
+
         // Atomic write: write to temp file then rename
         let temp_path = self.accounts_path.with_extension("tmp");
         fs::write(&temp_path, content).await?;
@@ -274,7 +277,7 @@ impl Storage {
     async fn save_tasks(&self, tasks: &HashMap<String, Task>) -> Result<()> {
         let list: Vec<_> = tasks.values().cloned().collect();
         let content = serde_json::to_string_pretty(&list)?;
-        
+
         let temp_path = self.tasks_path.with_extension("tmp");
         fs::write(&temp_path, content).await?;
         fs::rename(&temp_path, &self.tasks_path).await?;

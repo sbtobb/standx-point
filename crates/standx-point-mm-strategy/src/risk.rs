@@ -248,11 +248,7 @@ fn aggregate_depth(depth: &DepthBook) -> Decimal {
 fn sum_depth_levels(levels: &[DepthLevel]) -> Decimal {
     levels.iter().fold(Decimal::ZERO, |acc, level| {
         let qty = level.1;
-        if qty > Decimal::ZERO {
-            acc + qty
-        } else {
-            acc
-        }
+        if qty > Decimal::ZERO { acc + qty } else { acc }
     })
 }
 
@@ -293,11 +289,7 @@ fn best_ask(levels: &[DepthLevel]) -> Option<Decimal> {
 }
 
 fn decimal_max(a: Decimal, b: Decimal) -> Decimal {
-    if a >= b {
-        a
-    } else {
-        b
-    }
+    if a >= b { a } else { b }
 }
 
 #[cfg(test)]

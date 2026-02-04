@@ -7,25 +7,16 @@
 
 use crate::config::{CredentialsConfig, StrategyConfig, TaskConfig};
 use crate::market_data::MarketDataHub;
-use anyhow::{anyhow, Context as _, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use anyhow::{Context as _, Result, anyhow};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rust_decimal::Decimal;
 use standx_point_adapter::{
-    CancelOrderRequest,
-    Chain,
-    ClientConfig,
-    Credentials,
-    Ed25519Signer,
-    NewOrderRequest,
-    OrderType,
-    Side,
-    StandxClient,
-    SymbolPrice,
-    TimeInForce,
+    CancelOrderRequest, Chain, ClientConfig, Credentials, Ed25519Signer, NewOrderRequest,
+    OrderType, Side, StandxClient, SymbolPrice, TimeInForce,
 };
 use std::sync::Once;
 use std::time::Duration;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, Sleep};
 use tokio_util::sync::CancellationToken;
@@ -283,12 +274,9 @@ impl Task {
         auth_base_url: &str,
         trading_base_url: &str,
     ) -> Result<StandxClient> {
-        let mut client = StandxClient::with_config_and_base_urls(
-            client_config,
-            auth_base_url,
-            trading_base_url,
-        )
-        .map_err(|err| anyhow!("create StandxClient failed: {err}"))?;
+        let mut client =
+            StandxClient::with_config_and_base_urls(client_config, auth_base_url, trading_base_url)
+                .map_err(|err| anyhow!("create StandxClient failed: {err}"))?;
 
         let secret_key = decode_ed25519_secret_key_base64(&config.credentials.signing_key)
             .context("decode signing_key (base64) failed")?;
@@ -453,7 +441,11 @@ impl Task {
             match self.client.new_order(req).await {
                 Ok(resp) if resp.code == 0 => {}
                 Ok(resp) => {
-                    let err = anyhow!("new_order returned code={} message={}", resp.code, resp.message);
+                    let err = anyhow!(
+                        "new_order returned code={} message={}",
+                        resp.code,
+                        resp.message
+                    );
                     tracing::warn!(
                         task_uuid = %self.id,
                         task_id = %self.config.id,
@@ -565,10 +557,11 @@ mod tests {
     use super::*;
 
     use serde_json::json;
-    use standx_point_adapter::http::signature::{
-        HEADER_REQUEST_ID, HEADER_REQUEST_SIGNATURE, HEADER_REQUEST_TIMESTAMP, HEADER_REQUEST_VERSION,
-    };
     use standx_point_adapter::RequestSigner;
+    use standx_point_adapter::http::signature::{
+        HEADER_REQUEST_ID, HEADER_REQUEST_SIGNATURE, HEADER_REQUEST_TIMESTAMP,
+        HEADER_REQUEST_VERSION,
+    };
     use std::str;
     use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
