@@ -14,7 +14,7 @@ use std::time::Duration;
 use standx_point_mm_strategy::{config, market_data::MarketDataHub, task::TaskManager};
 use tokio::sync::{RwLock, mpsc};
 
-const TICK_RATE: u64 = 250;
+pub const TICK_RATE: u64 = 250;
 
 pub struct App {
     pub state: Arc<RwLock<AppState>>,
@@ -115,7 +115,7 @@ impl App {
         Ok(())
     }
 
-    async fn handle_event(&mut self, event: AppEvent) -> Result<()> {
+    pub async fn handle_event(&mut self, event: AppEvent) -> Result<()> {
         match event {
              AppEvent::Key(key) => {
                 if key.code == KeyCode::Char('x') {

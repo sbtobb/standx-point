@@ -19,6 +19,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod app;
+use crate::app::TICK_RATE;
 mod cli;
 mod state;
 mod ui;
@@ -112,6 +113,29 @@ async fn run_cli_mode(config_path: PathBuf, dry_run: bool) -> Result<()> {
 async fn run_tui_mode() -> Result<()> {
     let mut app = app::App::new().await?;
 
+    // Check if we're in test mode and skip TUI initialization if needed
+    let is_test_mode = std::env::var("STANDX_TUI_TEST_EXIT_AFTER_TICKS").is_ok();
+    if is_test_mode && app.auto_exit_after_ticks.is_some() {
+        // In test mode, skip TUI rendering and just run the app logic until auto-exit
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(TICK_RATE));
+        while !app.should_exit {
+            tokio::select! {
+                _ = interval.tick() => {
+                    app.handle_event(app::event::AppEvent::Tick).await?;
+                    app.tick_count += 1;
+                    
+                    if let Some(n) = app.auto_exit_after_ticks {
+                        if app.tick_count >= n {
+                            app.should_exit = true;
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // Normal TUI mode
     enable_raw_mode()?;
     stdout().execute(ratatui::crossterm::terminal::EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout());
