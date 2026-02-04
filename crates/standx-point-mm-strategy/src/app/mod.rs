@@ -166,8 +166,9 @@ impl App {
 
     async fn draw(&self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         let state = self.state.read().await;
+        let storage = self.storage.clone();
         terminal.draw(|frame| {
-            crate::ui::render(frame, &state);
+            crate::ui::render(frame, &state, &storage);
         })?;
         Ok(())
     }

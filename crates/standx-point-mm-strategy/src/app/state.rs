@@ -1,5 +1,5 @@
 use crate::app::event::{AppEvent, TaskState};
-use crate::state::storage::Storage;
+use crate::state::storage::{Storage, Account, Task};
 use anyhow::Result;
 use ratatui::crossterm::event::KeyEvent;
 use std::sync::Arc;
@@ -61,11 +61,17 @@ pub struct AppState {
     pub modal: Option<ModalType>,
     /// Reference to storage for data access
     storage: Arc<Storage>,
+    /// Cached accounts for synchronous access in render
+    pub accounts: Vec<Account>,
+    /// Cached tasks for synchronous access in render
+    pub tasks: Vec<Task>,
 }
 
 impl AppState {
     /// Create new application state
     pub async fn new(storage: Arc<Storage>) -> Result<Self> {
+        let accounts = storage.list_accounts().await?;
+        let tasks = storage.list_tasks().await?;
         Ok(Self {
             mode: AppMode::Normal,
             focused_pane: Pane::Sidebar,
@@ -75,6 +81,8 @@ impl AppState {
             show_help: false,
             modal: None,
             storage,
+            accounts,
+            tasks,
         })
     }
 
