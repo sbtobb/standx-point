@@ -1,4 +1,3 @@
-use crate::app::event::{AppEvent, TaskState};
 use crate::state::storage::{Storage, Account, Task};
 use anyhow::Result;
 use ratatui::crossterm::event::KeyEvent;

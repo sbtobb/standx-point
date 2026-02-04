@@ -1,14 +1,14 @@
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::state::{AppState, Pane, SidebarMode};
 use crate::state::storage::{Account, Storage, Task};
 
 /// Render the detail view showing account or task details
-pub fn render(frame: &mut Frame, area: Rect, state: &AppState, storage: &Storage) {
+pub fn render(frame: &mut Frame, area: Rect, state: &AppState, _storage: &Storage) {
     let block = Block::default()
         .title("Detail View")
         .borders(Borders::ALL)
@@ -88,7 +88,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, storage: &Storage
 }
 
 /// Render account details
-fn render_account_details(account: &Account) -> Vec<Line> {
+fn render_account_details(account: &Account) -> Vec<Line<'_>> {
     // Mask sensitive fields
     let masked_jwt = if account.jwt_token.len() > 8 {
         format!(
@@ -156,7 +156,7 @@ fn render_account_details(account: &Account) -> Vec<Line> {
 }
 
 /// Render task details
-fn render_task_details(task: &Task) -> Vec<Line> {
+fn render_task_details(task: &Task) -> Vec<Line<'_>> {
     vec![
         Line::from(""),
         Line::from(vec![
