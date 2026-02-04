@@ -1,10 +1,8 @@
 {
-  "active_plan": "/Users/cyouguang/Documents/codework/standx-point/.sisyphus/plans/standx-auth-cli-optimization.md",
-  "started_at": "2026-02-03T14:19:43.871Z",
+  "active_plan": "/Users/cyouguang/Documents/codework/standx-point/.sisyphus/plans/ratatui-tui-refactor.md",
+  "started_at": "2026-02-04T10:51:41.784Z",
   "session_ids": [
-    "ses_3dc241452ffevfWu66EbYdFdq8",
-    "ses_3dc1d0aa2ffe10LvvPJ1fBq1xd",
-    "ses_3dc1c751dffeIf7lOFhW4p21mY"
+    "ses_3d7c9146affep0ed5LieG9mere"
   ],
-  "plan_name": "standx-auth-cli-optimization"
+  "plan_name": "ratatui-tui-refactor"
 }

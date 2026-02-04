@@ -103,6 +103,38 @@ impl StandxWebSocket {
         });
         self.send_subscription(msg).await
     }
+    
+    /// Unsubscribe from price updates for a symbol
+    pub async fn unsubscribe_price(&self, symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let msg = serde_json::json!({
+            "unsubscribe": {
+                "channel": "price",
+                "symbol": symbol
+            }
+        });
+        self.send_subscription(msg).await
+    }
+    
+    /// Unsubscribe from depth book updates
+    pub async fn unsubscribe_depth(&self, symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let msg = serde_json::json!({
+            "unsubscribe": {
+                "channel": "depth_book",
+                "symbol": symbol
+            }
+        });
+        self.send_subscription(msg).await
+    }
+    
+    /// Unsubscribe from order updates (requires auth)
+    pub async fn unsubscribe_orders(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let msg = serde_json::json!({
+            "unsubscribe": {
+                "channel": "order"
+            }
+        });
+        self.send_subscription(msg).await
+    }
 
     async fn connect_stream(&self, url: &str) -> Result<(), Box<dyn std::error::Error>> {
         let (ws_stream, _response) = connect_async(url).await?;

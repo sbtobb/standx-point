@@ -3,7 +3,11 @@ resolver = "2"
 members = [
     "crates/standx-point-adapter",
     "crates/standx-point-mm-strategy",
+    "crates/standx-point-gui", "examples/json-persistence-demo",
 ]
 [workspace.dependencies]
 standx-point-adapter = { path = "crates/standx-point-adapter" }
 standx-point-mm-strategy = { path = "crates/standx-point-mm-strategy" }
+standx-point-gui = { path = "crates/standx-point-gui" }
+
+

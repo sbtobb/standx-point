@@ -1,0 +1,1 @@
+- [2026-02-04] `cargo build -p standx-point-gui` failed due to errors in `crates/standx-point-gui/src/ui/task_detail.rs` related to `gpui_component::StyledExt` methods (`font_bold`, `font_mono`, `overflow_y_scroll`). `status_bar.rs` compiled successfully (no errors reported for it).

@@ -7,6 +7,10 @@
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
+use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use ratatui::crossterm::ExecutableCommand;
+use ratatui::{backend::CrosstermBackend, Terminal};
+use std::io::stdout;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -14,7 +18,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod app;
 mod cli;
+mod state;
+mod ui;
 
 use standx_point_mm_strategy::{MarketDataHub, StrategyConfig, TaskManager};
 
@@ -52,18 +59,23 @@ async fn main() -> Result<()> {
         return cli::init::run_init(output);
     }
 
-    let config_path = args.config.context("config path is required for running")?;
+    match args.config {
+        Some(config_path) => run_cli_mode(config_path, args.dry_run).await,
+        None => run_tui_mode().await,
+    }
+}
 
+async fn run_cli_mode(config_path: PathBuf, dry_run: bool) -> Result<()> {
     info!(
         config_path = %config_path.display(),
-        dry_run = args.dry_run,
-        "starting standx-mm-strategy"
+        dry_run = dry_run,
+        "starting standx-mm-strategy (CLI mode)"
     );
 
     let config = load_config(&config_path)?;
     info!(task_count = config.tasks.len(), "configuration loaded");
 
-    if args.dry_run {
+    if dry_run {
         info!("dry-run requested; configuration validated");
         return Ok(());
     }
@@ -95,6 +107,29 @@ async fn main() -> Result<()> {
     info!("market data hub shutdown complete");
 
     Ok(())
+}
+
+async fn run_tui_mode() -> Result<()> {
+    let mut app = app::App::new().await?;
+
+    enable_raw_mode()?;
+    stdout().execute(ratatui::crossterm::terminal::EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout());
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(err) => {
+            disable_raw_mode()?;
+            stdout().execute(ratatui::crossterm::terminal::LeaveAlternateScreen)?;
+            return Err(err.into());
+        }
+    };
+
+    let result = app.run(&mut terminal).await;
+
+    disable_raw_mode()?;
+    stdout().execute(ratatui::crossterm::terminal::LeaveAlternateScreen)?;
+
+    result
 }
 
 fn init_tracing(log_level: &str) -> Result<()> {
