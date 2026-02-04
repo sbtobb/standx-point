@@ -110,16 +110,6 @@ fn render_account_details(account: &Account) -> Vec<Line> {
         "****".to_string()
     };
 
-    let masked_signing_key = if account.signing_key.len() > 8 {
-        format!(
-            "{}...{}",
-            &account.signing_key[..4],
-            &account.signing_key[account.signing_key.len() - 4..]
-        )
-    } else {
-        "****".to_string()
-    };
-
     vec![
         Line::from(""),
         Line::from(vec![
