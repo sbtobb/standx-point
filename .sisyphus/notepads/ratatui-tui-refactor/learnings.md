@@ -109,3 +109,40 @@ This approach avoids:
 - **F4 Credentials Toggle Pattern**: Implemented credentials visibility toggle using F4 key with keypress flash feedback. Added `show_credentials: bool` field to AppState, toggle method, key handler, and modified render_account_details to respect the flag. Updated help.rs to document the new shortcut.
 - **Focus Cycling**: Implemented Tab focus cycling between Sidebar -> Detail -> Menu -> Sidebar by adding `Pane::Menu` to `Pane` enum, updating the `Tab` key handler logic, and adding visual focus indication (background style) to `menu_bar::render`. Updated detail view hint logic to treat Menu focus similarly to Sidebar (showing hints instead of details) by checking `!= Pane::Detail`.
 - **Auto-exit Mechanism**: Added an env-var gated auto-exit feature for TUI mode to support automated tests. The `STANDX_TUI_TEST_EXIT_AFTER_TICKS` variable takes a positive integer N, and the TUI run loop exits after N ticks (each tick is 250ms) with Ok. The feature is disabled when the env var is unset, maintaining production behavior.
+- CLI mode backward compatibility testing: Created integration test using existing binary invocation pattern. The test verifies that --config and --dry-run flags work together correctly by running the compiled binary with a test configuration and checking for a successful exit status. This ensures that CLI mode remains functional alongside the new TUI mode.
+
+## Documentation Conventions (2026-02-05)
+- **TUI Documentation**: When documenting the TUI, followed a "Bilingual Hybrid" approach:
+    - **Prose/Explanation**: Chinese (Simplified) to comply with project rules for assistant communication.
+    - **Technical Terms**: English (Commands, Keybindings, Envs, Flags) to maintain consistency with the codebase and developer experience.
+- **Workflow-oriented**: Structured the TUI guide around the "First-run" experience (Account creation -> Task creation -> Execution).
+- **Shortcuts Alignment**: Ensured the README shortcut table is an exact mirror of the implementation in `crates/standx-point-mm-strategy/src/ui/components/help.rs`.
+- **TUI Logging Implementation**: Added structured logging for TUI operations using tracing crate. Key log points:
+  - App startup: info level log with mode (TUI)
+  - Key events: debug level log with key details
+  - Help overlay: info level log when opened/closed
+  - Dialog/modal operations: info level log for create, edit, delete dialogs
+  - Task operations: info level log for start task, stop all tasks
+  - Shutdown: info level log for shutdown start and complete
+  - Terminal resize: debug level log with new dimensions
+  - Log fields: Added contextual fields like sidebar_mode, focused_pane, and selected_index/task_id where available
+
+## Ctrl+C 强制退出实现
+
+**问题**: 需要实现 Ctrl+C 强制退出功能，该功能应在所有模式下立即生效，包括帮助覆盖层打开时。
+
+**解决方案**:
+1. 在 `handle_event` 方法的最开头添加 Ctrl+C 检测逻辑
+2. 该处理逻辑绕过了所有其他事件处理（包括帮助覆盖层的键消耗）
+3. 设置 `should_exit = true` 并添加 `action="force_quit"` 日志
+4. 更新帮助组件以显示新的快捷键
+
+**实现细节**:
+- 在 `crates/standx-point-mm-strategy/src/app/mod.rs` 中添加 Ctrl+C 处理
+- 在 `crates/standx-point-mm-strategy/src/ui/components/help.rs` 中更新帮助文本
+- 所有测试通过，验证了功能正确性
+
+- Added unit tests to verify Ctrl+C force quit works as a global shortcut
+  - Tests cover normal mode, help mode, dialog mode, and insert mode
+  - Followed existing test patterns using temporary directories for isolation
+  - All tests pass successfully

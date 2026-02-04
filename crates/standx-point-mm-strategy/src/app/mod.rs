@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use standx_point_mm_strategy::{config, market_data::MarketDataHub, task::TaskManager};
 use tokio::sync::{RwLock, mpsc};
+use tracing::{debug, info};
 
 pub const TICK_RATE: u64 = 250;
 
@@ -109,8 +110,10 @@ impl App {
         }
 
         // Signal input loop to exit and wait for it
+        info!(action = "shutdown", "shutdown started");
         shutdown.store(true, Ordering::Relaxed);
         let _ = input_task.await;
+        info!(action = "shutdown_complete", "shutdown completed");
 
         Ok(())
     }
@@ -118,15 +121,27 @@ impl App {
     pub async fn handle_event(&mut self, event: AppEvent) -> Result<()> {
         match event {
              AppEvent::Key(key) => {
+                debug!(key = ?key, "key pressed");
+                
+                // Handle Ctrl+C force quit immediately (bypasses all other logic)
+                if key.code == KeyCode::Char('c') && key.modifiers.contains(crossterm_event::KeyModifiers::CONTROL) {
+                    self.should_exit = true;
+                    info!(action = "force_quit", "user requested force quit via Ctrl+C");
+                    return Ok(());
+                }
+                
                 if key.code == KeyCode::Char('x') {
                     // Handle stop command separately to avoid borrow issues
                     let mut state = self.state.write().await;
+                    let sidebar_mode = state.sidebar_mode;
+                    let focused_pane = state.focused_pane;
                     state.stop_all_tasks().await?;
                     drop(state);
                     self.task_manager.shutdown_and_wait().await?;
                     let mut state = self.state.write().await;
                     state.status_message = Some("All tasks stopped".to_string());
                     state.stop_spinner().await?;
+                    info!(action = "stop_all_tasks", sidebar_mode = ?sidebar_mode, focused_pane = ?focused_pane, "all tasks stopped");
                 } else {
                     let mut state = self.state.write().await;
 
@@ -135,6 +150,7 @@ impl App {
                         match key.code {
                             KeyCode::F(1) | KeyCode::Esc => {
                                 state.close_help().await?;
+                                info!(action = "close_help", sidebar_mode = ?state.sidebar_mode, focused_pane = ?state.focused_pane, "help overlay closed");
                             }
                             _ => {
                                 // Consume all other keys while help is shown
@@ -152,6 +168,7 @@ impl App {
                             let sidebar_mode = state.sidebar_mode;
                             let selected_index = state.selected_index;
                             let tasks = state.tasks.clone();
+                            let focused_pane = state.focused_pane;
                             
                             drop(state); // Drop the mutable state borrow
                             
@@ -190,6 +207,7 @@ impl App {
                                     let mut state = self.state.write().await;
                                     state.status_message = Some(format!("Started task: {}", selected_task.id));
                                     state.stop_spinner().await?;
+                                    info!(action = "start_task", task_id = %selected_task.id, symbol = %selected_task.symbol, sidebar_mode = ?sidebar_mode, focused_pane = ?focused_pane, "task started");
                                 } else {
                                     let mut state = self.state.write().await;
                                     state.status_message = Some("Account not found for task".to_string());
@@ -213,8 +231,8 @@ impl App {
                 let mut state = self.state.write().await;
                 state.update_tick().await?;
             }
-            AppEvent::Resize(_w, _h) => {
-                // Just consume the event to trigger a redraw loop
+            AppEvent::Resize(w, h) => {
+                debug!(width = w, height = h, "terminal resized");
             }
             _ => {}
         }
@@ -232,6 +250,7 @@ impl App {
          match key.code {
              Char('q') | Esc => {
                  *should_exit = true;
+                 info!(action = "quit", sidebar_mode = ?state.sidebar_mode, focused_pane = ?state.focused_pane, "user requested quit");
              }
              Char('j') | Down => {
                  state.next_item().await?;
@@ -261,19 +280,28 @@ impl App {
              }
             Char('n') => {
                 state.create_new_item().await?;
+                info!(action = "create_new_item", sidebar_mode = ?state.sidebar_mode, focused_pane = ?state.focused_pane, "create new item dialog opened");
                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
             }
             Char('e') => {
                 state.edit_selected_item().await?;
+                info!(action = "edit_selected_item", sidebar_mode = ?state.sidebar_mode, focused_pane = ?state.focused_pane, selected_index = state.selected_index, "edit selected item dialog opened");
                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
             }
             Char('d') => {
                 state.delete_selected_item().await?;
+                info!(action = "delete_selected_item", sidebar_mode = ?state.sidebar_mode, focused_pane = ?state.focused_pane, selected_index = state.selected_index, "delete selected item dialog opened");
                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
             }
             Char('s') => {
                 if state.sidebar_mode == SidebarMode::Tasks {
                     state.start_selected_task().await?;
+                    let selected_task_id = if state.selected_index < state.tasks.len() {
+                        Some(&state.tasks[state.selected_index].id)
+                    } else {
+                        None
+                    };
+                    info!(action = "start_selected_task", sidebar_mode = ?state.sidebar_mode, focused_pane = ?state.focused_pane, selected_index = state.selected_index, task_id = ?selected_task_id, "start selected task requested");
                 }
                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
             }
@@ -291,18 +319,21 @@ impl App {
             }
             F(1) => {
                 state.show_help().await?;
+                info!(action = "show_help", sidebar_mode = ?state.sidebar_mode, focused_pane = ?state.focused_pane, "help overlay opened");
                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
             }
             F(2) => {
                 state
                     .switch_sidebar_mode(crate::app::state::SidebarMode::Accounts)
                     .await?;
+                info!(action = "switch_sidebar_mode", sidebar_mode = ?SidebarMode::Accounts, focused_pane = ?state.focused_pane, "sidebar mode switched to accounts");
                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
             }
             F(3) => {
                 state
                     .switch_sidebar_mode(crate::app::state::SidebarMode::Tasks)
                     .await?;
+                info!(action = "switch_sidebar_mode", sidebar_mode = ?SidebarMode::Tasks, focused_pane = ?state.focused_pane, "sidebar mode switched to tasks");
                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
             }
             F(4) => {
@@ -358,5 +389,145 @@ impl App {
             crate::ui::render(frame, &state, &storage, market_data);
         })?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::state::{AppMode, AppState};
+    use crate::state::storage::Storage;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::env;
+    use std::sync::Arc;
+    use std::time::SystemTime;
+
+    /// Creates a unique temporary directory for testing
+    fn create_unique_temp_dir() -> std::path::PathBuf {
+        let temp_dir = env::temp_dir();
+        let pid = std::process::id();
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        temp_dir.join(format!("standx-mm-test-{}-{}", pid, timestamp))
+    }
+
+    /// Cleans up a temporary directory (ignores errors)
+    fn cleanup_temp_dir(path: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// Creates a minimal test App instance
+    async fn create_test_app() -> Result<App> {
+        let temp_dir = create_unique_temp_dir();
+        let storage = Arc::new(Storage::new_in_dir(&temp_dir).await.unwrap());
+        let state = Arc::new(RwLock::new(AppState::new(storage.clone()).await?));
+        let (event_tx, event_rx) = mpsc::channel(100);
+        let task_manager = TaskManager::new();
+        let market_data = MarketDataHub::new();
+
+        Ok(App {
+            state,
+            storage,
+            task_manager,
+            market_data,
+            event_tx,
+            event_rx,
+            should_exit: false,
+            auto_exit_after_ticks: None,
+            tick_count: 0,
+        })
+    }
+
+    /// Creates a Ctrl+C key event
+    fn create_ctrl_c_event() -> AppEvent {
+        AppEvent::Key(KeyEvent {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: ratatui::crossterm::event::KeyEventKind::Press,
+            state: ratatui::crossterm::event::KeyEventState::NONE,
+        })
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_c_force_quit_normal_mode() {
+        // Create test app
+        let mut app = create_test_app().await.unwrap();
+        
+        // Verify initial state
+        assert!(!app.should_exit);
+
+        // Send Ctrl+C event
+        app.handle_event(create_ctrl_c_event()).await.unwrap();
+
+        // Verify app should exit
+        assert!(app.should_exit);
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_c_force_quit_help_mode() {
+        // Create test app
+        let mut app = create_test_app().await.unwrap();
+        
+        // Open help overlay
+        {
+            let mut state = app.state.write().await;
+            state.show_help = true;
+            assert!(state.show_help);
+        }
+
+        // Verify initial state
+        assert!(!app.should_exit);
+
+        // Send Ctrl+C event
+        app.handle_event(create_ctrl_c_event()).await.unwrap();
+
+        // Verify app should exit
+        assert!(app.should_exit);
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_c_force_quit_dialog_mode() {
+        // Create test app
+        let mut app = create_test_app().await.unwrap();
+        
+        // Enter dialog mode
+        {
+            let mut state = app.state.write().await;
+            state.mode = AppMode::Dialog;
+            assert_eq!(state.mode, AppMode::Dialog);
+        }
+
+        // Verify initial state
+        assert!(!app.should_exit);
+
+        // Send Ctrl+C event
+        app.handle_event(create_ctrl_c_event()).await.unwrap();
+
+        // Verify app should exit
+        assert!(app.should_exit);
+    }
+
+    #[tokio::test]
+    async fn test_ctrl_c_force_quit_insert_mode() {
+        // Create test app
+        let mut app = create_test_app().await.unwrap();
+        
+        // Enter insert mode
+        {
+            let mut state = app.state.write().await;
+            state.mode = AppMode::Insert;
+            assert_eq!(state.mode, AppMode::Insert);
+        }
+
+        // Verify initial state
+        assert!(!app.should_exit);
+
+        // Send Ctrl+C event
+        app.handle_event(create_ctrl_c_event()).await.unwrap();
+
+        // Verify app should exit
+        assert!(app.should_exit);
     }
 }
