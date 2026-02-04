@@ -268,7 +268,7 @@ mod serde_helpers {
             .collect()
     }
 
-    pub fn serialize_decimal_vec<S>(values: &Vec<Decimal>, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize_decimal_vec<S>(values: &[Decimal], serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {

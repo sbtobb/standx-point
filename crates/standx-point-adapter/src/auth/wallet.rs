@@ -51,7 +51,7 @@ impl MockWalletSigner {
 #[async_trait]
 impl WalletSigner for MockWalletSigner {
     fn chain(&self) -> Chain {
-        self.chain.clone()
+        self.chain
     }
 
     fn address(&self) -> &str {

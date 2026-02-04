@@ -95,7 +95,7 @@ impl WalletSigner for SolanaWalletSigner {
         };
 
         let json = serde_json::to_string(&payload)
-            .map_err(|e| StandxError::Serialization(e))?;
+            .map_err(StandxError::Serialization)?;
 
         Ok(BASE64_STANDARD.encode(json))
     }

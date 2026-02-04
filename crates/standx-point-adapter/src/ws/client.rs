@@ -180,10 +180,10 @@ impl StandxWebSocket {
                             }
                             Some(Ok(WsMessage::Ping(_))) | Some(Ok(WsMessage::Pong(_))) => {}
                             Some(Ok(message)) => {
-                                if let Some(parsed) = Self::parse_message(message) {
-                                    if message_tx.send(parsed).await.is_err() {
-                                        break;
-                                    }
+                                if let Some(parsed) = Self::parse_message(message)
+                                    && message_tx.send(parsed).await.is_err()
+                                {
+                                    break;
                                 }
                             }
                             Some(Err(_)) | None => {

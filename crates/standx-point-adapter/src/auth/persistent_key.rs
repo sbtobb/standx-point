@@ -79,11 +79,10 @@ impl PersistentKeyManager {
         let mut accounts = Vec::new();
         if let Ok(entries) = fs::read_dir(&self.key_dir) {
             for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str() {
-                    if name.ends_with("_ed25519.key") {
-                        let address = &name[..name.len() - "_ed25519.key".len()];
-                        accounts.push(address.to_string());
-                    }
+                if let Some(name) = entry.file_name().to_str()
+                    && let Some(address) = name.strip_suffix("_ed25519.key")
+                {
+                    accounts.push(address.to_string());
                 }
             }
         }
