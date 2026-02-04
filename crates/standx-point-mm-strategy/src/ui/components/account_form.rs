@@ -11,7 +11,7 @@ use ratatui::Frame;
 use crate::state::storage::Account;
 
 /// Account form data for creating/editing accounts
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AccountForm {
     pub id: String,
     pub name: String,

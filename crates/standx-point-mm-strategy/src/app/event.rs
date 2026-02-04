@@ -3,6 +3,7 @@ use rust_decimal::Decimal;
 
 /// All possible events that can occur in the application
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum AppEvent {
     /// Periodic tick for UI updates (every 250ms)
     Tick,
@@ -46,6 +47,7 @@ pub enum AppEvent {
 
 /// Task states for status updates
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum TaskState {
     Init,
     Starting,
@@ -56,6 +58,7 @@ pub enum TaskState {
 }
 
 /// Trait for types that can handle application events
+#[allow(dead_code)]
 pub trait EventHandler {
     /// Handle an application event
     fn handle_event(&mut self, event: AppEvent) -> anyhow::Result<()>;

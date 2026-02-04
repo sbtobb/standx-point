@@ -1,9 +1,15 @@
+/// **Input**: App events, key inputs, storage access, shared app state.
+/// **Output**: Event dispatch, state mutations, and synchronous UI draw calls.
+/// **Position**: TUI application runtime and event dispatcher.
+/// **Update**: Wire account form modal input and cancel handling.
+/// **Update**: Close task form modal on cancel.
+/// **Update**: Persist per-task start/stop state and refresh task list.
 pub mod event;
 pub mod state;
 
 use crate::app::event::AppEvent;
-use crate::app::state::{AppMode, AppState, Pane, SidebarMode};
-use crate::state::storage::Storage;
+use crate::app::state::{AppMode, AppState, ModalType, Pane, SidebarMode};
+use crate::state::storage::{Storage, TaskState};
 use anyhow::Result;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self as crossterm_event, Event, KeyCode, KeyEvent};
@@ -95,11 +101,9 @@ impl App {
                     self.tick_count += 1;
                     
                     // Check if we need to auto-exit after N ticks
-                    if let Some(n) = self.auto_exit_after_ticks {
-                        if self.tick_count >= n {
+                    if let Some(n) = self.auto_exit_after_ticks && self.tick_count >= n {
                             self.should_exit = true;
                         }
-                    }
                 }
                 Some(event) = self.event_rx.recv() => {
                     self.handle_event(event).await?;
@@ -130,101 +134,197 @@ impl App {
                     return Ok(());
                 }
                 
-                if key.code == KeyCode::Char('x') {
-                    // Handle stop command separately to avoid borrow issues
-                    let mut state = self.state.write().await;
-                    let sidebar_mode = state.sidebar_mode;
-                    let focused_pane = state.focused_pane;
-                    state.stop_all_tasks().await?;
-                    drop(state);
-                    self.task_manager.shutdown_and_wait().await?;
-                    let mut state = self.state.write().await;
-                    state.status_message = Some("All tasks stopped".to_string());
-                    state.stop_spinner().await?;
-                    info!(action = "stop_all_tasks", sidebar_mode = ?sidebar_mode, focused_pane = ?focused_pane, "all tasks stopped");
-                } else {
-                    let mut state = self.state.write().await;
+                let mut state = self.state.write().await;
 
-                    // Handle help overlay interaction
-                    if state.show_help {
-                        match key.code {
-                            KeyCode::F(1) | KeyCode::Esc => {
-                                state.close_help().await?;
-                                info!(action = "close_help", sidebar_mode = ?state.sidebar_mode, focused_pane = ?state.focused_pane, "help overlay closed");
-                            }
-                            _ => {
-                                // Consume all other keys while help is shown
-                            }
+                // Handle help overlay interaction
+                if state.show_help {
+                    match key.code {
+                        KeyCode::F(1) | KeyCode::Esc => {
+                            state.close_help().await?;
+                            info!(action = "close_help", sidebar_mode = ?state.sidebar_mode, focused_pane = ?state.focused_pane, "help overlay closed");
                         }
-                        return Ok(());
+                        _ => {
+                            // Consume all other keys while help is shown
+                        }
                     }
-                    
-                    // Set keypress flash message (2 ticks = ~500ms at 250ms per tick)
-                    state.keypress_flash = Some((format!("Key pressed: {:?}", key), 2));
-                    
-                    match state.mode {
-                        AppMode::Normal => {
-                            // Extract necessary information before dropping the state lock
-                            let sidebar_mode = state.sidebar_mode;
-                            let selected_index = state.selected_index;
-                            let tasks = state.tasks.clone();
-                            let focused_pane = state.focused_pane;
-                            
-                            drop(state); // Drop the mutable state borrow
-                            
-                            if sidebar_mode == SidebarMode::Tasks && selected_index < tasks.len() && key.code == KeyCode::Char('s') {
-                                let selected_task = &tasks[selected_index];
-                                let account = self.storage.get_account(&selected_task.account_id).await;
-                                
-                                if let Some(account) = account {
-                                    // Convert storage task and account to StrategyConfig
-                                    let task_config = config::TaskConfig {
-                                        id: selected_task.id.clone(),
-                                        symbol: selected_task.symbol.clone(),
-                                        credentials: config::CredentialsConfig {
-                                            jwt_token: account.jwt_token.clone(),
-                                            signing_key: account.signing_key.clone(),
-                                        },
-                                        risk: config::RiskConfig {
-                                            level: selected_task.risk_level.clone(),
-                                            max_position_usd: selected_task.max_position_usd.clone(),
-                                            price_jump_threshold_bps: selected_task.price_jump_threshold_bps,
-                                        },
-                                        sizing: config::SizingConfig {
-                                            base_qty: selected_task.base_qty.clone(),
-                                            tiers: selected_task.tiers,
-                                        },
-                                    };
-                                    
-                                    let strategy_config = config::StrategyConfig {
-                                        tasks: vec![task_config],
-                                    };
-                                    
-                                    // Spawn task using TaskManager
-                                    self.task_manager.spawn_from_config(strategy_config).await?;
-                                    
-                                    // Update status message
-                                    let mut state = self.state.write().await;
-                                    state.status_message = Some(format!("Started task: {}", selected_task.id));
-                                    state.stop_spinner().await?;
-                                    info!(action = "start_task", task_id = %selected_task.id, symbol = %selected_task.symbol, sidebar_mode = ?sidebar_mode, focused_pane = ?focused_pane, "task started");
-                                } else {
-                                    let mut state = self.state.write().await;
-                                    state.status_message = Some("Account not found for task".to_string());
-                                    state.stop_spinner().await?;
-                                }
-                            } else if sidebar_mode == SidebarMode::Tasks && key.code == KeyCode::Char('s') {
+                    return Ok(());
+                }
+
+                // Set keypress flash message (2 ticks = ~500ms at 250ms per tick)
+                state.keypress_flash = Some((format!("Key pressed: {:?}", key), 2));
+
+                match state.mode {
+                    AppMode::Normal => {
+                        // Extract necessary information before dropping the state lock
+                        let sidebar_mode = state.sidebar_mode;
+                        let selected_index = state.selected_index;
+                        let tasks = state.tasks.clone();
+                        let focused_pane = state.focused_pane;
+
+                        drop(state); // Drop the mutable state borrow
+
+                        if sidebar_mode == SidebarMode::Tasks && key.code == KeyCode::Char('s') {
+                            if selected_index >= tasks.len() {
                                 let mut state = self.state.write().await;
                                 state.status_message = Some("No task selected".to_string());
-                            } else {
-                                // Handle other normal mode keys
-                                let mut state = self.state.write().await;
-                                Self::handle_normal_mode(&mut state, key, &mut self.should_exit).await?;
+                                return Ok(());
                             }
+
+                            let selected_task = tasks[selected_index].clone();
+                            {
+                                let mut state = self.state.write().await;
+                                state.start_selected_task().await?;
+                            }
+
+                            let account = self.storage.get_account(&selected_task.account_id).await;
+                            if let Some(account) = account {
+                                // Convert storage task and account to StrategyConfig
+                                let task_config = config::TaskConfig {
+                                    id: selected_task.id.clone(),
+                                    symbol: selected_task.symbol.clone(),
+                                    credentials: config::CredentialsConfig {
+                                        jwt_token: account.jwt_token.clone(),
+                                        signing_key: account.signing_key.clone(),
+                                    },
+                                    risk: config::RiskConfig {
+                                        level: selected_task.risk_level.clone(),
+                                        max_position_usd: selected_task.max_position_usd.clone(),
+                                        price_jump_threshold_bps: selected_task.price_jump_threshold_bps,
+                                    },
+                                    sizing: config::SizingConfig {
+                                        base_qty: selected_task.base_qty.clone(),
+                                        tiers: selected_task.tiers,
+                                    },
+                                };
+
+                                let strategy_config = config::StrategyConfig {
+                                    tasks: vec![task_config],
+                                };
+
+                                // Spawn task using TaskManager
+                                match self.task_manager.spawn_from_config(strategy_config).await {
+                                    Ok(()) => {
+                                        if let Err(err) = self
+                                            .storage
+                                            .update_task(&selected_task.id, |task| {
+                                                task.state = TaskState::Running;
+                                            })
+                                            .await
+                                        {
+                                            let mut state = self.state.write().await;
+                                            state.status_message =
+                                                Some(format!("Failed to persist task state: {}", err));
+                                            state.stop_spinner().await?;
+                                            return Ok(());
+                                        }
+
+                                        if let Err(err) = self.refresh_tasks_and_clamp().await {
+                                            let mut state = self.state.write().await;
+                                            state.status_message = Some(format!(
+                                                "Task started but refresh failed: {}",
+                                                err
+                                            ));
+                                            state.stop_spinner().await?;
+                                            return Ok(());
+                                        }
+
+                                        let mut state = self.state.write().await;
+                                        state.status_message =
+                                            Some(format!("Started task: {}", selected_task.id));
+                                        state.stop_spinner().await?;
+                                        info!(action = "start_task", task_id = %selected_task.id, symbol = %selected_task.symbol, sidebar_mode = ?sidebar_mode, focused_pane = ?focused_pane, "task started");
+                                    }
+                                    Err(err) => {
+                                        let failure_message = err.to_string();
+                                        let update_message = failure_message.clone();
+                                        let update_result = self
+                                            .storage
+                                            .update_task(&selected_task.id, move |task| {
+                                                task.state = TaskState::Failed(update_message);
+                                            })
+                                            .await;
+
+                                        if update_result.is_ok() {
+                                            let _ = self.refresh_tasks_and_clamp().await;
+                                        }
+
+                                        let mut state = self.state.write().await;
+                                        state.status_message = Some(format!(
+                                            "Failed to start task {}: {}",
+                                            selected_task.id, failure_message
+                                        ));
+                                        state.stop_spinner().await?;
+                                        info!(action = "start_task_failed", task_id = %selected_task.id, symbol = %selected_task.symbol, sidebar_mode = ?sidebar_mode, focused_pane = ?focused_pane, error = %failure_message, "task start failed");
+                                    }
+                                }
+                            } else {
+                                let mut state = self.state.write().await;
+                                state.status_message = Some("Account not found for task".to_string());
+                                state.stop_spinner().await?;
+                            }
+                        } else if sidebar_mode == SidebarMode::Tasks && key.code == KeyCode::Char('x') {
+                            if selected_index >= tasks.len() {
+                                let mut state = self.state.write().await;
+                                state.status_message = Some("No task selected".to_string());
+                                return Ok(());
+                            }
+
+                            let selected_task = tasks[selected_index].clone();
+                            {
+                                let mut state = self.state.write().await;
+                                state.stop_selected_task().await?;
+                            }
+
+                            match self.task_manager.stop_task(&selected_task.id).await {
+                                Ok(()) => {
+                                    if let Err(err) = self
+                                        .storage
+                                        .update_task(&selected_task.id, |task| {
+                                            task.state = TaskState::Stopped;
+                                        })
+                                        .await
+                                    {
+                                        let mut state = self.state.write().await;
+                                        state.status_message =
+                                            Some(format!("Failed to persist task state: {}", err));
+                                        state.stop_spinner().await?;
+                                        return Ok(());
+                                    }
+
+                                    if let Err(err) = self.refresh_tasks_and_clamp().await {
+                                        let mut state = self.state.write().await;
+                                        state.status_message = Some(format!(
+                                            "Task stopped but refresh failed: {}",
+                                            err
+                                        ));
+                                        state.stop_spinner().await?;
+                                        return Ok(());
+                                    }
+
+                                    let mut state = self.state.write().await;
+                                    state.status_message =
+                                        Some(format!("Stopped task: {}", selected_task.id));
+                                    state.stop_spinner().await?;
+                                    info!(action = "stop_task", task_id = %selected_task.id, symbol = %selected_task.symbol, sidebar_mode = ?sidebar_mode, focused_pane = ?focused_pane, "task stopped");
+                                }
+                                Err(err) => {
+                                    let mut state = self.state.write().await;
+                                    state.status_message = Some(format!(
+                                        "Failed to stop task {}: {}",
+                                        selected_task.id, err
+                                    ));
+                                    state.stop_spinner().await?;
+                                    info!(action = "stop_task_failed", task_id = %selected_task.id, symbol = %selected_task.symbol, sidebar_mode = ?sidebar_mode, focused_pane = ?focused_pane, error = %err, "task stop failed");
+                                }
+                            }
+                        } else {
+                            // Handle other normal mode keys
+                            let mut state = self.state.write().await;
+                            Self::handle_normal_mode(&mut state, key, &mut self.should_exit).await?;
                         }
-                        AppMode::Insert => Self::handle_insert_mode(&mut state, key).await?,
-                        AppMode::Dialog => Self::handle_dialog_mode(&mut state, key).await?,
                     }
+                    AppMode::Insert => Self::handle_insert_mode(&mut state, key).await?,
+                    AppMode::Dialog => Self::handle_dialog_mode(&mut state, key).await?,
                 }
             }
             AppEvent::Tick => {
@@ -264,8 +364,26 @@ impl App {
                  state.focus_pane(Pane::Sidebar).await?;
                  state.pending_g_ticks = 0; // Clear pending 'g' prefix
              }
-             Char('l') | Right | Enter => {
+             Char('l') | Right => {
                  state.focus_pane(Pane::Detail).await?;
+                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
+             }
+             Char('v') | Enter => {
+                 // Check if there's a selectable item
+                 let has_selectable_item = match state.sidebar_mode {
+                     SidebarMode::Accounts => state.selected_index < state.accounts.len(),
+                     SidebarMode::Tasks => state.selected_index < state.tasks.len(),
+                 };
+                 
+                 if has_selectable_item {
+                     state.focus_pane(Pane::Detail).await?;
+                 } else {
+                     let message = match state.sidebar_mode {
+                         SidebarMode::Accounts => "No account selected",
+                         SidebarMode::Tasks => "No task selected",
+                     };
+                     state.status_message = Some(message.to_string());
+                 }
                  state.pending_g_ticks = 0; // Clear pending 'g' prefix
              }
              Tab => {
@@ -359,7 +477,13 @@ impl App {
     async fn handle_insert_mode(state: &mut AppState, key: KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Esc => {
-                state.mode = AppMode::Normal;
+                if matches!(state.modal.as_ref(), Some(ModalType::AccountForm { .. })) {
+                    state.close_account_form_modal();
+                } else if matches!(state.modal.as_ref(), Some(ModalType::TaskForm { .. })) {
+                    state.close_task_form_modal();
+                } else {
+                    state.mode = AppMode::Normal;
+                }
             }
             _ => {
                 state.handle_form_input(key).await?;
@@ -388,6 +512,18 @@ impl App {
         terminal.draw(|frame| {
             crate::ui::render(frame, &state, &storage, market_data);
         })?;
+        Ok(())
+    }
+
+    async fn refresh_tasks_and_clamp(&self) -> Result<()> {
+        let tasks = self.storage.list_tasks().await?;
+        let mut state = self.state.write().await;
+        state.tasks = tasks;
+        if state.tasks.is_empty() {
+            state.selected_index = 0;
+        } else if state.selected_index >= state.tasks.len() {
+            state.selected_index = state.tasks.len() - 1;
+        }
         Ok(())
     }
 }

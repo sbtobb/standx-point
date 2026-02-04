@@ -67,6 +67,7 @@ pub enum TaskState {
 }
 
 impl Task {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: String,
         symbol: String,
@@ -267,6 +268,7 @@ impl Storage {
         Ok(list)
     }
 
+    #[allow(dead_code)]
     pub async fn list_tasks_for_account(&self, account_id: &str) -> Result<Vec<Task>> {
         let tasks = self.tasks.lock().await;
         let mut list: Vec<_> = tasks
@@ -278,6 +280,7 @@ impl Storage {
         Ok(list)
     }
 
+    #[allow(dead_code)]
     pub async fn get_task(&self, id: &str) -> Option<Task> {
         self.tasks.lock().await.get(id).cloned()
     }

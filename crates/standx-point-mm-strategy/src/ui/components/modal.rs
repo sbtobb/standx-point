@@ -1,3 +1,9 @@
+/// **Input**: ModalType variants and ratatui layout/style primitives.
+/// **Output**: Modal dialog rendering via ratatui widgets.
+/// **Position**: Modal rendering entrypoint in the TUI component layer.
+/// **Update**: Add account form modal rendering.
+/// **Update**: Handle confirm modal action context.
+/// **Update**: Add task form modal rendering.
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -5,6 +11,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::state::ModalType;
+use crate::ui::components::account_form;
+use crate::ui::components::task_form;
 
 /// Render a modal dialog
 pub fn render(frame: &mut Frame, area: Rect, modal: &ModalType) {
@@ -16,8 +24,18 @@ pub fn render(frame: &mut Frame, area: Rect, modal: &ModalType) {
             // Help modal is handled by the help component
             // This should not be reached if help is shown via state.show_help
         }
-        ModalType::Confirm { title, message } => {
+        ModalType::Confirm {
+            title,
+            message,
+            action: _,
+        } => {
             render_confirmation(frame, area, title, message);
+        }
+        ModalType::AccountForm { form, is_edit } => {
+            account_form::render(frame, area, form, *is_edit);
+        }
+        ModalType::TaskForm { form, is_edit } => {
+            task_form::render(frame, area, form, *is_edit);
         }
     }
 }

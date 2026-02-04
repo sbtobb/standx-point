@@ -61,7 +61,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, market_data: &Mar
     ));
 
     // Common symbols to display
-    let symbols = vec!["BTC-USD", "ETH-USD"];
+    let symbols = ["BTC-USD", "ETH-USD"];
     for (i, symbol) in symbols.iter().enumerate() {
         if i > 0 {
             title_spans.push(Span::raw(", "));

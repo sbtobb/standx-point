@@ -3,6 +3,7 @@
 [OUTPUT]: Tokio tasks running lifecycle (startup -> run -> shutdown) with best-effort cleanup
 [POS]:    Execution layer - per-task trading orchestration
 [UPDATE]: When changing startup/shutdown guarantees or supervision semantics
+[UPDATE]: 2026-02-05 Add per-task stop capability keyed by task_id
 */
 
 use crate::config::{CredentialsConfig, StrategyConfig, TaskConfig};
@@ -14,6 +15,7 @@ use standx_point_adapter::{
     CancelOrderRequest, Chain, ClientConfig, Credentials, Ed25519Signer, NewOrderRequest,
     OrderType, Side, StandxClient, SymbolPrice, TimeInForce,
 };
+use std::collections::HashMap;
 use std::sync::Once;
 use std::time::Duration;
 use tokio::sync::{Mutex, watch};
@@ -46,10 +48,16 @@ pub enum TaskState {
     Failed,
 }
 
+#[derive(Debug)]
+struct ManagedTask {
+    shutdown: CancellationToken,
+    handle: JoinHandle<Result<()>>,
+}
+
 /// Task manager that coordinates multiple trading tasks.
 #[derive(Debug)]
 pub struct TaskManager {
-    tasks: Vec<JoinHandle<Result<()>>>,
+    tasks: HashMap<String, ManagedTask>,
 
     #[cfg_attr(test, allow(dead_code))]
     market_data_hub: std::sync::Arc<Mutex<MarketDataHub>>,
@@ -63,7 +71,7 @@ impl TaskManager {
     /// Create a new task manager.
     pub fn new() -> Self {
         Self {
-            tasks: Vec::new(),
+            tasks: HashMap::new(),
             market_data_hub: std::sync::Arc::new(Mutex::new(MarketDataHub::new())),
             shutdown: CancellationToken::new(),
 
@@ -74,7 +82,7 @@ impl TaskManager {
 
     pub fn with_market_data_hub(market_data_hub: std::sync::Arc<Mutex<MarketDataHub>>) -> Self {
         Self {
-            tasks: Vec::new(),
+            tasks: HashMap::new(),
             market_data_hub,
             shutdown: CancellationToken::new(),
 
@@ -109,17 +117,63 @@ impl TaskManager {
         ensure_panic_hook_installed();
 
         for task_config in config.tasks {
+            if self.tasks.contains_key(&task_config.id) {
+                return Err(anyhow!(
+                    "duplicate task_id in StrategyConfig: {}",
+                    task_config.id
+                ));
+            }
+
             let client = build_client(&task_config)
                 .with_context(|| format!("build StandxClient for task_id={}", task_config.id))?;
 
             let price_rx = self.subscribe_price(&task_config.symbol).await;
             let shutdown = self.shutdown.child_token();
+            let task_id = task_config.id.clone();
 
-            let task = Task::new_with_client(task_config, client, price_rx, shutdown);
-            self.tasks.push(task.spawn());
+            let task = Task::new_with_client(task_config, client, price_rx, shutdown.clone());
+            let handle = task.spawn();
+            self.tasks.insert(
+                task_id,
+                ManagedTask {
+                    shutdown,
+                    handle,
+                },
+            );
         }
 
         Ok(())
+    }
+
+    pub async fn stop_task(&mut self, task_id: &str) -> Result<()> {
+        let Some(task) = self.tasks.remove(task_id) else {
+            return Err(anyhow!("task_id not found: {task_id}"));
+        };
+
+        task.shutdown.cancel();
+
+        let mut handle = task.handle;
+        let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
+        let sleep = sleep_until_deadline(deadline);
+
+        tokio::select! {
+            res = &mut handle => {
+                match res {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(err)) => Err(err).with_context(|| format!("task_id={task_id} returned error")),
+                    Err(join_err) => {
+                        if join_err.is_panic() {
+                            return Err(anyhow!("task panicked task_id={task_id}: {join_err}"));
+                        }
+                        Err(anyhow!("task join error task_id={task_id}: {join_err}"))
+                    }
+                }
+            }
+            _ = sleep => {
+                handle.abort();
+                Err(anyhow!("stop_task timed out after {SHUTDOWN_TIMEOUT:?} task_id={task_id}"))
+            }
+        }
     }
 
     /// Request graceful shutdown and wait for all tasks to exit.
@@ -134,9 +188,11 @@ impl TaskManager {
         let deadline = Instant::now() + timeout;
 
         // Drain handles so we can abort remaining ones on timeout.
-        let mut handles = std::mem::take(&mut self.tasks);
+        let mut tasks: Vec<(String, ManagedTask)> =
+            std::mem::take(&mut self.tasks).into_iter().collect();
 
-        while let Some(mut handle) = handles.pop() {
+        while let Some((task_id, task)) = tasks.pop() {
+            let mut handle = task.handle;
             let sleep = sleep_until_deadline(deadline);
 
             tokio::select! {
@@ -145,22 +201,22 @@ impl TaskManager {
                         Ok(Ok(())) => {}
                         Ok(Err(err)) => {
                             self.shutdown.cancel();
-                            abort_all(handles);
-                            return Err(err).context("task returned error");
+                            abort_all(tasks);
+                            return Err(err).with_context(|| format!("task returned error task_id={task_id}"));
                         }
                         Err(join_err) => {
                             self.shutdown.cancel();
-                            abort_all(handles);
+                            abort_all(tasks);
                             if join_err.is_panic() {
-                                return Err(anyhow!("task panicked: {join_err}"));
+                                return Err(anyhow!("task panicked task_id={task_id}: {join_err}"));
                             }
-                            return Err(anyhow!("task join error: {join_err}"));
+                            return Err(anyhow!("task join error task_id={task_id}: {join_err}"));
                         }
                     }
                 }
                 _ = sleep => {
                     handle.abort();
-                    abort_all(handles);
+                    abort_all(tasks);
                     return Err(anyhow!("shutdown timed out after {timeout:?}"));
                 }
             }
@@ -546,9 +602,9 @@ fn sleep_until_deadline(deadline: Instant) -> Sleep {
     tokio::time::sleep_until(deadline)
 }
 
-fn abort_all(handles: Vec<JoinHandle<Result<()>>>) {
-    for handle in handles {
-        handle.abort();
+fn abort_all(tasks: Vec<(String, ManagedTask)>) {
+    for (_task_id, task) in tasks {
+        task.handle.abort();
     }
 }
 
@@ -652,9 +708,14 @@ mod tests {
         }
     }
 
-    fn test_task_config(symbol: &str, jwt: &str, signing_key_base64: &str) -> TaskConfig {
+    fn test_task_config_with_id(
+        task_id: &str,
+        symbol: &str,
+        jwt: &str,
+        signing_key_base64: &str,
+    ) -> TaskConfig {
         TaskConfig {
-            id: "task-1".to_string(),
+            id: task_id.to_string(),
             symbol: symbol.to_string(),
             credentials: CredentialsConfig {
                 jwt_token: jwt.to_string(),
@@ -670,6 +731,10 @@ mod tests {
                 tiers: 1,
             },
         }
+    }
+
+    fn test_task_config(symbol: &str, jwt: &str, signing_key_base64: &str) -> TaskConfig {
+        test_task_config_with_id("task-1", symbol, jwt, signing_key_base64)
     }
 
     fn test_order_json(order_id: i64, symbol: &str) -> serde_json::Value {
@@ -930,7 +995,7 @@ mod tests {
             .mount(&server)
             .await;
 
-         let task_config = test_task_config(symbol, jwt, &signing_key_base64);
+        let task_config = test_task_config(symbol, jwt, &signing_key_base64);
         let strategy_config = StrategyConfig {
             tasks: vec![task_config.clone()],
         };
@@ -960,5 +1025,86 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1000)).await;
         
         wait_for_request_count(&server, 3, Duration::from_secs(10)).await;
+    }
+
+    #[tokio::test]
+    async fn task_manager_stop_task_errors_when_missing() {
+        let mut manager = TaskManager::new();
+        let err = manager.stop_task("missing").await.unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn task_manager_stop_task_only_stops_selected() {
+        let _guard = test_lock().lock().await;
+        let server = MockServer::builder().start().await;
+        let base_url = server.uri();
+
+        let jwt = "jwt-token";
+        let secret_key = [2u8; 32];
+        let signing_key_base64 = BASE64.encode(secret_key);
+        let symbol_1 = "BTC-USD";
+        let symbol_2 = "ETH-USD";
+
+        // Each task: one call during startup + one call during stop/shutdown.
+        for symbol in [symbol_1, symbol_2] {
+            Mock::given(method("GET"))
+                .and(path("/api/query_open_orders"))
+                .and(query_param("symbol", symbol))
+                .and(header("authorization", format!("Bearer {jwt}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "page_size": 0,
+                    "result": [],
+                    "total": 0,
+                })))
+                .expect(2)
+                .mount(&server)
+                .await;
+
+            Mock::given(method("GET"))
+                .and(path("/api/query_positions"))
+                .and(query_param("symbol", symbol))
+                .and(header("authorization", format!("Bearer {jwt}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+
+        let strategy_config = StrategyConfig {
+            tasks: vec![
+                test_task_config_with_id("task-1", symbol_1, jwt, &signing_key_base64),
+                test_task_config_with_id("task-2", symbol_2, jwt, &signing_key_base64),
+            ],
+        };
+
+        let mut manager = TaskManager::new();
+        let client_config = ClientConfig {
+            timeout: Duration::from_secs(60),
+            connect_timeout: Duration::from_secs(30),
+        };
+        manager
+            .spawn_from_config_with_client_builder(strategy_config, |cfg| {
+                Task::build_client_with_config_and_base_urls(
+                    cfg,
+                    client_config.clone(),
+                    &base_url,
+                    &base_url,
+                )
+            })
+            .await
+            .unwrap();
+
+        wait_for_request_count(&server, 2, Duration::from_secs(5)).await;
+
+        manager.stop_task("task-1").await.unwrap();
+        wait_for_request_count(&server, 4, Duration::from_secs(10)).await;
+
+        manager.shutdown_and_wait().await.unwrap();
+
+        // Allow wiremock to finish processing all requests before checking count.
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+
+        wait_for_request_count(&server, 6, Duration::from_secs(10)).await;
     }
 }

@@ -12,6 +12,7 @@ use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io::stdout;
 use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -111,6 +112,7 @@ async fn run_cli_mode(config_path: PathBuf, dry_run: bool) -> Result<()> {
 }
 
 async fn run_tui_mode() -> Result<()> {
+    info!("starting standx-mm-strategy (TUI mode)");
     let mut app = app::App::new().await?;
 
     // Check if we're in test mode and skip TUI initialization if needed
@@ -124,16 +126,21 @@ async fn run_tui_mode() -> Result<()> {
                     app.handle_event(app::event::AppEvent::Tick).await?;
                     app.tick_count += 1;
                     
-                    if let Some(n) = app.auto_exit_after_ticks {
-                        if app.tick_count >= n {
+                    if let Some(n) = app.auto_exit_after_ticks && app.tick_count >= n {
                             app.should_exit = true;
                         }
-                    }
                 }
             }
         }
         return Ok(());
     }
+
+    // Subscribe to price updates for common symbols (only in normal TUI mode)
+    let symbols = vec!["BTC-USD", "ETH-USD"];
+    for symbol in &symbols {
+        app.market_data.subscribe_price(symbol);
+    }
+    info!(symbols = ?symbols, "subscribed to price updates for symbols");
 
     // Normal TUI mode
     enable_raw_mode()?;
@@ -166,7 +173,7 @@ fn init_tracing(log_level: &str) -> Result<()> {
     Ok(())
 }
 
-fn load_config(path: &PathBuf) -> Result<StrategyConfig> {
+fn load_config(path: &Path) -> Result<StrategyConfig> {
     let path_str = path.to_str().context("config path must be valid utf-8")?;
     StrategyConfig::from_file(path_str).context("load config")
 }

@@ -94,14 +94,13 @@ impl RiskManager {
         let mut halt_reasons = Vec::new();
         let mut caution_reasons = Vec::new();
 
-        if let Some(velocity) = self.max_price_velocity_bps_per_second() {
-            if velocity > self.max_price_velocity_bps {
+        if let Some(velocity) = self.max_price_velocity_bps_per_second()
+            && velocity > self.max_price_velocity_bps {
                 halt_reasons.push(format!(
                     "price velocity {:.2} bps/s exceeds limit {:.2}",
                     velocity, self.max_price_velocity_bps
                 ));
             }
-        }
 
         if let Some(depth_snapshot) = depth {
             let total_depth = aggregate_depth(depth_snapshot);
@@ -112,14 +111,13 @@ impl RiskManager {
                 ));
             }
 
-            if let Some(spread) = spread_bps(depth_snapshot) {
-                if spread > self.max_spread_bps {
+            if let Some(spread) = spread_bps(depth_snapshot)
+                && spread > self.max_spread_bps {
                     caution_reasons.push(format!(
                         "spread {:.2} bps exceeds limit {:.2}",
                         spread, self.max_spread_bps
                     ));
                 }
-            }
         }
 
         if let Some(position_snapshot) = position {
@@ -190,9 +188,7 @@ impl RiskManager {
 
         let mut max_velocity: Option<Decimal> = None;
         let mut iter = self.price_history.iter().cloned();
-        let Some((mut t0, mut p0)) = iter.next() else {
-            return None;
-        };
+        let (mut t0, mut p0) = iter.next()?;
 
         for (t1, p1) in iter {
             let prev_t = t0;

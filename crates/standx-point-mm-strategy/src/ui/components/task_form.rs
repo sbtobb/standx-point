@@ -11,7 +11,7 @@ use ratatui::Frame;
 use crate::state::storage::Task;
 
 /// Task form data for creating/editing tasks
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TaskForm {
     pub id: String,
     pub symbol: String,

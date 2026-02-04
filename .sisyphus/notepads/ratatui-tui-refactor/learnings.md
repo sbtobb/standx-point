@@ -146,3 +146,43 @@ This approach avoids:
   - Tests cover normal mode, help mode, dialog mode, and insert mode
   - Followed existing test patterns using temporary directories for isolation
   - All tests pass successfully
+## Price Subscription Placement
+
+**Why place price subscriptions in `run_tui_mode` instead of `App::new()`?**
+
+Placing subscriptions in `run_tui_mode` (after test mode check) prevents the MarketDataHub from starting its WebSocket worker during tests. The `STANDX_TUI_TEST_EXIT_AFTER_TICKS` test mode skips terminal initialization and should avoid network connections entirely to keep tests fast and reliable.
+
+Subscriptions are added for BTC-USD and ETH-USD - the two symbols displayed in the status bar. This ensures the status bar shows real-time prices when the app is running in normal TUI mode.
+
+- Account form modal pattern: store `AccountForm` inside `ModalType`, handle input in AppState insert mode, clear sensitive fields on cancel/close, and refresh cached lists after persistence.
+- 账户编辑：在 `is_edit` 模式下强制 ID 只读，跳过 ID 字段切换，并在输入处理层阻止修改。
+
+- Account deletion: store `ConfirmAction::DeleteAccount { account_id }` in `ModalType::Confirm`, execute in `close_dialog`, refresh accounts, and clamp `selected_index` after removal.
+- 任务创建模态流程：在 Tasks 侧栏按 `n` 打开 `TaskForm`，Insert 模式处理输入；`Enter` 先做 `TaskForm::to_task` 校验，再检查 `account_id` 是否存在，成功后 `Storage::create_task` + `list_tasks` 刷新并关闭模态，失败则保留窗口并写入 `error_message`。
+
+- TaskManager 单任务停止：实现 `stop_task(task_id)` 时先从 map `remove` 出 `JoinHandle`/token 再 `await`，避免跨 `await` 的可变借用；超时分支先 `abort()` 再返回错误，保证 UI 不会被卡住。
+
+- 任务启停：在 Tasks 模式下用 `s`/`x` 控制单任务启动/停止，成功后持久化 `TaskState::Running/Stopped` 并刷新任务列表，同时在刷新后 clamp `selected_index`，避免索引越界。
+## Clippy Fix Learnings (Feb 5, 2026)
+
+1. **Get First Element**: Replace `.get(0)` with `.first()` for better readability and idiomatic Rust
+2. **Collapsible If**: Combine nested `if let Some(x) = y { if x > z { ... } }` into `if let Some(x) = y && x > z { ... }`
+3. **Question Mark Operator**: Replace `let Some(x) = y else { return None; }` with `let x = y?;` for conciseness
+4. **FromStr Trait**: Implement `std::str::FromStr` instead of a standalone `from_str` method to avoid ambiguity
+5. **Dead Code**: Add `#[allow(dead_code)]` to unused enum variants, traits, and methods that are intended for future features
+6. **Too Many Arguments**: Use `#[allow(clippy::too_many_arguments)]` for methods that need many parameters temporarily
+7. **Path vs PathBuf**: Use `&Path` instead of `&PathBuf` in function arguments to accept both Path and PathBuf inputs
+8. **Useless Vec**: Replace `vec!["a", "b"]` with array `["a", "b"]` when the collection size is fixed
+## View Details Shortcuts Implementation
+
+Implemented "view details" shortcuts for the TUI:
+- `Enter` key: When sidebar has focus and an item is selected, focuses Detail pane to show the item's details
+- `v` key: Same behavior as Enter for both Accounts and Tasks modes
+- Handled edge case when no selectable item is selected (shows appropriate status message)
+
+Key changes:
+- Modified `handle_normal_mode` function in `crates/standx-point-mm-strategy/src/app/mod.rs`
+- Changed the behavior of Enter key from directly focusing Detail pane to first checking if an item is selected
+- Added 'v' key as an alias for the same functionality
+- Improved user feedback by showing a status message when no item is selected
+

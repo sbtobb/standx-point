@@ -44,13 +44,15 @@ pub enum RiskLevel {
     Aggressive,
 }
 
-impl RiskLevel {
-    pub fn from_str(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
+impl std::str::FromStr for RiskLevel {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(match value.trim().to_ascii_lowercase().as_str() {
             "aggressive" => Self::Aggressive,
             "moderate" => Self::Moderate,
             _ => Self::Conservative,
-        }
+        })
     }
 }
 
@@ -427,11 +429,9 @@ impl MarketMakingStrategy {
     }
 
     fn update_mode_for_timers(&mut self, now: tokio::time::Instant) {
-        if let Some(until) = self.survival_until {
-            if now >= until {
-                self.survival_until = None;
-                self.mode = self.preferred_mode;
-            }
+        if let Some(until) = self.survival_until && now >= until {
+            self.survival_until = None;
+            self.mode = self.preferred_mode;
         }
     }
 
@@ -563,11 +563,10 @@ impl MarketMakingStrategy {
                         .await?;
                 } else {
                     // Keep current quote; update qty bookkeeping when partially filled.
-                    if effective_qty != still_live.qty {
-                        if let Some(q) = self.live_quotes.get_mut(&slot) {
+                    if effective_qty != still_live.qty
+                        && let Some(q) = self.live_quotes.get_mut(&slot) {
                             q.qty = effective_qty;
                         }
-                    }
                 }
                 return Ok(());
             }

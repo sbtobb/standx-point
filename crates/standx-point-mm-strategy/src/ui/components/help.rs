@@ -108,6 +108,10 @@ pub fn render(frame: &mut Frame, area: Rect) {
             Span::styled("  q / Esc  ", Style::default().fg(Color::Cyan)),
             Span::raw("Quit application"),
         ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+C   ", Style::default().fg(Color::Cyan)),
+            Span::raw("Force quit immediately"),
+        ]),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Press F1 or Esc to close...",

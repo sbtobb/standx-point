@@ -68,14 +68,14 @@ Convert the CLI-based market making bot into a full-featured TUI application wit
 
 ### Definition of Done
  - [x] TUI launches and displays split-pane layout (sidebar + detail view)
-- [ ] Global status bar shows live price updates from MarketDataHub
+- [x] Global status bar shows live price updates from MarketDataHub
  - [x] Bottom menu provides keyboard shortcuts for all operations
-- [ ] Accounts can be created, edited, deleted, and persisted to JSON
-- [ ] Tasks can be created, edited, deleted, started, stopped, and persisted to JSON
-- [ ] Task lifecycle (Start → Running → Stop → Stopped) works through TUI controls
-- [ ] All configuration is manageable in-TUI (no manual YAML editing required)
+- [x] Accounts can be created, edited, deleted, and persisted to JSON
+- [x] Tasks can be created, edited, deleted, started, stopped, and persisted to JSON
+- [x] Task lifecycle (Start → Running → Stop → Stopped) works through TUI controls
+- [x] All configuration is manageable in-TUI (no manual YAML editing required)
 - [ ] Graceful shutdown works (Ctrl+C or menu option) with proper cleanup
- - [ ] Existing tests still pass (backward compatibility for library exports)
+- [x] Existing tests still pass (backward compatibility for library exports)
 
 ### Must Have
 - Split-pane layout with sidebar task list and right-side detail view
@@ -1065,7 +1065,7 @@ Phase 9: Testing (1 task)
 - [x] F3: Switch sidebar to Tasks mode
 - [x] F4: Toggle credentials visibility (show/hide sensitive data)
 - [x] q: Quit application (with confirmation if tasks running)
-- [ ] Ctrl+C: Force quit (same as 'q' but immediate)
+- [x] Ctrl+C: Force quit (same as 'q' but immediate)
 
 **Navigation Shortcuts (Normal Mode):**
 - [x] j or ↓: Move selection down in sidebar
@@ -1078,24 +1078,24 @@ Phase 9: Testing (1 task)
 - [x] Tab: Cycle focus between sidebar → detail view → menu bar
 
 **Account Mode Shortcuts (F2 active):**
-- [ ] n: New account (open create form)
-- [ ] e: Edit selected account (open edit form)
-- [ ] d: Delete selected account (open confirmation dialog)
+- [x] n: New account (open create form)
+- [x] e: Edit selected account (open edit form)
+- [x] d: Delete selected account (open confirmation dialog)
 - [ ] v: View account details (same as Enter)
 
 **Task Mode Shortcuts (F3 active):**
-- [ ] n: New task (open create form)
-- [ ] e: Edit selected task (open edit form)
-- [ ] d: Delete selected task (open confirmation dialog)
-- [ ] s: Start selected task (if Stopped)
-- [ ] x: Stop selected task (if Running)
+- [x] n: New task (open create form)
+- [x] e: Edit selected task (open edit form)
+- [x] d: Delete selected task (open confirmation dialog)
+- [x] s: Start selected task (if Stopped)
+- [x] x: Stop selected task (if Running)
 - [ ] v: View task details (same as Enter)
 
 **Form Navigation (Form Mode):**
-- [ ] Tab: Move to next field
-- [ ] Shift+Tab: Move to previous field
-- [ ] Enter: Submit form (if valid)
-- [ ] Esc: Cancel form
+- [x] Tab: Move to next field
+- [x] Shift+Tab: Move to previous field
+- [x] Enter: Submit form (if valid)
+- [x] Esc: Cancel form
 - [ ] Ctrl+A: Select all text in current field
 - [ ] Ctrl+K: Clear current field
 
@@ -1168,7 +1168,7 @@ Phase 9: Testing (1 task)
 
 **Integration Tests:**
 - [ ] Test: TUI startup without --config shows TUI mode (not CLI error)
-- [ ] Test: CLI mode with --config still works (backward compatibility)
+- [x] Test: CLI mode with --config still works (backward compatibility)
 - [ ] Test: Account CRUD flow:
   - Create account → Verify appears in sidebar
   - Edit account → Verify changes saved
@@ -1221,12 +1221,12 @@ Phase 9: Testing (1 task)
 - [ ] No crashes or panics
 
 **Documentation:**
-- [ ] README section added: "Using the TUI"
-- [ ] Description of layout (sidebar, detail view, status bar, menu)
-- [ ] List of all keyboard shortcuts with descriptions
-- [ ] Step-by-step guide: Creating your first account and task
+- [x] README section added: "Using the TUI"
+- [x] Description of layout (sidebar, detail view, status bar, menu)
+- [x] List of all keyboard shortcuts with descriptions
+- [x] Step-by-step guide: Creating your first account and task
 - [ ] Explanation of task lifecycle (start, run, stop)
-- [ ] Troubleshooting section (common issues and solutions)
+- [x] Troubleshooting section (common issues and solutions)
 
 **Performance Benchmarks:**
 - [ ] Startup time: TUI shows first frame within 500ms
@@ -1236,7 +1236,7 @@ Phase 9: Testing (1 task)
 - [ ] Scroll performance: Smooth scrolling in sidebar with 1000 items
 
 **Logging:**
-- [ ] TUI operations logged at INFO level:
+- [x] TUI operations logged at INFO level:
   - "Creating account: Test Account"
   - "Task started: btc-mm-1"
   - "Shutting down TUI"

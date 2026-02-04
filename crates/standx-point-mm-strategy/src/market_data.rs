@@ -441,7 +441,7 @@ fn symbol_price_from_price_data(data: PriceData) -> Option<SymbolPrice> {
     let last_price = parse_decimal_str(&data.last_price);
     let mid_price = parse_decimal_str(&data.mid_price);
 
-    let spread_bid = data.spread.get(0).and_then(|s| parse_decimal_str(s));
+    let spread_bid = data.spread.first().and_then(|s| parse_decimal_str(s));
     let spread_ask = data.spread.get(1).and_then(|s| parse_decimal_str(s));
 
     Some(SymbolPrice {
