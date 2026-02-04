@@ -5,3 +5,4 @@ pub mod menu_bar;
 pub mod modal;
 pub mod sidebar;
 pub mod status_bar;
+pub mod task_form;
