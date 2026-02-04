@@ -169,34 +169,53 @@ impl StandxClient {
     }
 
     pub(crate) async fn send_json<T: DeserializeOwned>(&self, builder: RequestBuilder) -> HttpResult<T> {
-        let response = builder.send().await?;
-        let status = response.status();
-        let body = response.text().await?;
-
-        if status.is_success() {
-            return Ok(serde_json::from_str::<T>(&body)?);
+        const MAX_RETRIES: usize = 3;
+        let mut retries = 0;
+        
+        loop {
+            let result = async {
+                let response = builder.try_clone().ok_or_else(|| StandxError::Internal("Builder cannot be cloned".to_string()))?.send().await?;
+                let status = response.status();
+                let body = response.text().await?;
+                
+                if status.is_success() {
+                    return Ok(serde_json::from_str::<T>(&body)?);
+                }
+                
+                if status == reqwest::StatusCode::UNAUTHORIZED {
+                    return Err(StandxError::TokenExpired);
+                }
+                
+                let message = match serde_json::from_str::<JsonValue>(&body) {
+                    Ok(JsonValue::Object(map)) => map
+                        .get("message")
+                        .and_then(|value| value.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| body.clone()),
+                    _ => body.clone(),
+                };
+                
+                if status == reqwest::StatusCode::FORBIDDEN
+                    && message.to_ascii_lowercase().contains("signature")
+                {
+                    return Err(StandxError::InvalidSignature);
+                }
+                
+                Err(StandxError::api_error(status, message))
+            }.await;
+            
+            match result {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    retries += 1;
+                    if retries > MAX_RETRIES {
+                        return Err(e);
+                    }
+                    // Wait for a short time before retrying
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
         }
-
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(StandxError::TokenExpired);
-        }
-
-        let message = match serde_json::from_str::<JsonValue>(&body) {
-            Ok(JsonValue::Object(map)) => map
-                .get("message")
-                .and_then(|value| value.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| body.clone()),
-            _ => body.clone(),
-        };
-
-        if status == reqwest::StatusCode::FORBIDDEN
-            && message.to_ascii_lowercase().contains("signature")
-        {
-            return Err(StandxError::InvalidSignature);
-        }
-
-        Err(StandxError::api_error(status, message))
     }
 
     /// Build full URL for auth endpoints

@@ -556,7 +556,16 @@ fn abort_all(handles: Vec<JoinHandle<Result<()>>>) {
 mod tests {
     use super::*;
 
+    use std::sync::OnceLock;
+    use tokio::sync::Mutex;
     use serde_json::json;
+
+    // Static async lock to serialize wiremock-heavy tests and prevent flakiness
+    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn test_lock() -> &'static Mutex<()> {
+        TEST_LOCK.get_or_init(|| Mutex::new(()))
+    }
     use standx_point_adapter::RequestSigner;
     use standx_point_adapter::http::signature::{
         HEADER_REQUEST_ID, HEADER_REQUEST_SIGNATURE, HEADER_REQUEST_TIMESTAMP,
@@ -565,6 +574,26 @@ mod tests {
     use std::str;
     use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
+
+    async fn wait_for_request_count(
+        server: &MockServer,
+        expected: usize,
+        timeout: Duration,
+    ) {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let count = server.received_requests().await.unwrap_or_default().len();
+            if count >= expected {
+                return;
+            }
+            if Instant::now() >= deadline {
+                panic!(
+                    "timed out waiting for {expected} requests, last count={count}"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
 
     #[derive(Clone)]
     struct ValidBodySignatureMatcher {
@@ -702,7 +731,8 @@ mod tests {
 
     #[tokio::test]
     async fn task_startup_cancels_open_orders() {
-        let server = MockServer::start().await;
+        let _guard = test_lock().lock().await;
+        let server = MockServer::builder().start().await;
         let base_url = server.uri();
 
         let jwt = "jwt-token";
@@ -759,7 +789,8 @@ mod tests {
 
     #[tokio::test]
     async fn task_shutdown_cancels_orders_and_closes_positions() {
-        let server = MockServer::start().await;
+        let _guard = test_lock().lock().await;
+        let server = MockServer::builder().start().await;
         let base_url = server.uri();
 
         let jwt = "jwt-token";
@@ -867,7 +898,8 @@ mod tests {
 
     #[tokio::test]
     async fn task_manager_spawns_and_shutdowns_tasks() {
-        let server = MockServer::start().await;
+        let _guard = test_lock().lock().await;
+        let server = MockServer::builder().start().await;
         let base_url = server.uri();
 
         let jwt = "jwt-token";
@@ -898,17 +930,21 @@ mod tests {
             .mount(&server)
             .await;
 
-        let task_config = test_task_config(symbol, jwt, &signing_key_base64);
+         let task_config = test_task_config(symbol, jwt, &signing_key_base64);
         let strategy_config = StrategyConfig {
             tasks: vec![task_config.clone()],
         };
 
         let mut manager = TaskManager::new();
+        let client_config = ClientConfig {
+            timeout: Duration::from_secs(60),
+            connect_timeout: Duration::from_secs(30),
+        };
         manager
             .spawn_from_config_with_client_builder(strategy_config, |cfg| {
                 Task::build_client_with_config_and_base_urls(
                     cfg,
-                    ClientConfig::default(),
+                    client_config.clone(),
                     &base_url,
                     &base_url,
                 )
@@ -916,6 +952,13 @@ mod tests {
             .await
             .unwrap();
 
+        wait_for_request_count(&server, 1, Duration::from_secs(5)).await;
+
         manager.shutdown_and_wait().await.unwrap();
+        
+        // Allow wiremock to finish processing all requests before checking count
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        
+        wait_for_request_count(&server, 3, Duration::from_secs(10)).await;
     }
 }

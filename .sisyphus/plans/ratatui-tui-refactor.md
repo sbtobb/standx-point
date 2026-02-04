@@ -67,15 +67,15 @@ Convert the CLI-based market making bot into a full-featured TUI application wit
 6. **Integration** (`app/integration.rs`): Bridge between TUI state and existing TaskManager/MarketDataHub
 
 ### Definition of Done
-- [ ] TUI launches and displays split-pane layout (sidebar + detail view)
+ - [x] TUI launches and displays split-pane layout (sidebar + detail view)
 - [ ] Global status bar shows live price updates from MarketDataHub
-- [ ] Bottom menu provides keyboard shortcuts for all operations
+ - [x] Bottom menu provides keyboard shortcuts for all operations
 - [ ] Accounts can be created, edited, deleted, and persisted to JSON
 - [ ] Tasks can be created, edited, deleted, started, stopped, and persisted to JSON
 - [ ] Task lifecycle (Start → Running → Stop → Stopped) works through TUI controls
 - [ ] All configuration is manageable in-TUI (no manual YAML editing required)
 - [ ] Graceful shutdown works (Ctrl+C or menu option) with proper cleanup
-- [ ] Existing tests still pass (backward compatibility for library exports)
+ - [ ] Existing tests still pass (backward compatibility for library exports)
 
 ### Must Have
 - Split-pane layout with sidebar task list and right-side detail view

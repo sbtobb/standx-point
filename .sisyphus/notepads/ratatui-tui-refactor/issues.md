@@ -1,0 +1,2 @@
+- 2026-02-04: 任务测试中 wiremock 池化服务器可能提前关闭连接，改为 builder 启动独立实例并等待请求计数以避免关闭竞态。
+- 2026-02-05: 任务测试间歇性失败 `connection closed before message completed`，通过添加 static async lock 序列化 wiremock 测试和在 send_json 方法中添加重试机制消除跨测试干扰。

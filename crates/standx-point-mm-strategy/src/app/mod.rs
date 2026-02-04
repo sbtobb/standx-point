@@ -2,13 +2,14 @@ pub mod event;
 pub mod state;
 
 use crate::app::event::AppEvent;
-use crate::app::state::{AppMode, AppState, Pane};
+use crate::app::state::{AppMode, AppState, Pane, SidebarMode};
 use crate::state::storage::Storage;
 use anyhow::Result;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self as crossterm_event, Event, KeyCode, KeyEvent, KeyEventKind};
 use std::io;
 use std::sync::Arc;
+use standx_point_mm_strategy::{config, market_data::MarketDataHub, task::TaskManager};
 use tokio::sync::{RwLock, mpsc};
 
 const TICK_RATE: u64 = 250;
@@ -16,6 +17,8 @@ const TICK_RATE: u64 = 250;
 pub struct App {
     pub state: Arc<RwLock<AppState>>,
     pub storage: Arc<Storage>,
+    pub task_manager: TaskManager,
+    pub market_data: MarketDataHub,
     pub event_tx: mpsc::Sender<AppEvent>,
     pub event_rx: mpsc::Receiver<AppEvent>,
     pub should_exit: bool,
@@ -26,10 +29,14 @@ impl App {
         let storage = Arc::new(Storage::new().await?);
         let state = Arc::new(RwLock::new(AppState::new(storage.clone()).await?));
         let (event_tx, event_rx) = mpsc::channel(100);
+        let task_manager = TaskManager::new();
+        let market_data = MarketDataHub::new();
 
         Ok(Self {
             state,
             storage,
+            task_manager,
+            market_data,
             event_tx,
             event_rx,
             should_exit: false,
@@ -38,6 +45,22 @@ impl App {
 
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(TICK_RATE));
+        let event_tx = self.event_tx.clone();
+        let _input_task = tokio::task::spawn_blocking(move || {
+            loop {
+                match crossterm_event::read() {
+                    Ok(Event::Key(key)) => {
+                        if key.kind == KeyEventKind::Press {
+                            if event_tx.blocking_send(AppEvent::Key(key)).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+        });
 
         while !self.should_exit {
             tokio::select! {
@@ -46,13 +69,6 @@ impl App {
                 }
                 Some(event) = self.event_rx.recv() => {
                     self.handle_event(event).await?;
-                }
-                Ok(event) = tokio::task::spawn_blocking(|| crossterm_event::read()) => {
-                    if let Ok(Event::Key(key)) = event {
-                        if key.kind == KeyEventKind::Press {
-                            self.handle_event(AppEvent::Key(key)).await?;
-                        }
-                    }
                 }
             }
 
@@ -63,17 +79,79 @@ impl App {
     }
 
     async fn handle_event(&mut self, event: AppEvent) -> Result<()> {
-        let mut state = self.state.write().await;
-
         match event {
-            AppEvent::Key(key) => match state.mode {
-                AppMode::Normal => {
-                    Self::handle_normal_mode(&mut state, key, &mut self.should_exit).await?
+            AppEvent::Key(key) => {
+                if key.code == KeyCode::Char('x') {
+                    // Handle stop command separately to avoid borrow issues
+                    self.task_manager.shutdown_and_wait().await?;
+                    let mut state = self.state.write().await;
+                    state.status_message = Some("All tasks stopped".to_string());
+                } else {
+                    let mut state = self.state.write().await;
+                    
+                    match state.mode {
+                        AppMode::Normal => {
+                            // Extract necessary information before dropping the state lock
+                            let sidebar_mode = state.sidebar_mode;
+                            let selected_index = state.selected_index;
+                            let tasks = state.tasks.clone();
+                            
+                            drop(state); // Drop the mutable state borrow
+                            
+                            if sidebar_mode == SidebarMode::Tasks && selected_index < tasks.len() && key.code == KeyCode::Char('s') {
+                                let selected_task = &tasks[selected_index];
+                                let account = self.storage.get_account(&selected_task.account_id).await;
+                                
+                                if let Some(account) = account {
+                                    // Convert storage task and account to StrategyConfig
+                                    let task_config = config::TaskConfig {
+                                        id: selected_task.id.clone(),
+                                        symbol: selected_task.symbol.clone(),
+                                        credentials: config::CredentialsConfig {
+                                            jwt_token: account.jwt_token.clone(),
+                                            signing_key: account.signing_key.clone(),
+                                        },
+                                        risk: config::RiskConfig {
+                                            level: selected_task.risk_level.clone(),
+                                            max_position_usd: selected_task.max_position_usd.clone(),
+                                            price_jump_threshold_bps: selected_task.price_jump_threshold_bps,
+                                        },
+                                        sizing: config::SizingConfig {
+                                            base_qty: selected_task.base_qty.clone(),
+                                            tiers: selected_task.tiers,
+                                        },
+                                    };
+                                    
+                                    let strategy_config = config::StrategyConfig {
+                                        tasks: vec![task_config],
+                                    };
+                                    
+                                    // Spawn task using TaskManager
+                                    self.task_manager.spawn_from_config(strategy_config).await?;
+                                    
+                                    // Update status message
+                                    let mut state = self.state.write().await;
+                                    state.status_message = Some(format!("Started task: {}", selected_task.id));
+                                } else {
+                                    let mut state = self.state.write().await;
+                                    state.status_message = Some("Account not found for task".to_string());
+                                }
+                            } else if sidebar_mode == SidebarMode::Tasks && key.code == KeyCode::Char('s') {
+                                let mut state = self.state.write().await;
+                                state.status_message = Some("No task selected".to_string());
+                            } else {
+                                // Handle other normal mode keys
+                                let mut state = self.state.write().await;
+                                Self::handle_normal_mode(&mut state, key, &mut self.should_exit).await?;
+                            }
+                        }
+                        AppMode::Insert => Self::handle_insert_mode(&mut state, key).await?,
+                        AppMode::Dialog => Self::handle_dialog_mode(&mut state, key).await?,
+                    }
                 }
-                AppMode::Insert => Self::handle_insert_mode(&mut state, key).await?,
-                AppMode::Dialog => Self::handle_dialog_mode(&mut state, key).await?,
-            },
+            }
             AppEvent::Tick => {
+                let mut state = self.state.write().await;
                 state.update_tick().await?;
             }
             _ => {}
@@ -82,7 +160,7 @@ impl App {
         Ok(())
     }
 
-    async fn handle_normal_mode(
+     async fn handle_normal_mode(
         state: &mut AppState,
         key: KeyEvent,
         should_exit: &mut bool,
@@ -113,12 +191,6 @@ impl App {
             }
             Char('d') => {
                 state.delete_selected_item().await?;
-            }
-            Char('s') => {
-                state.start_selected_task().await?;
-            }
-            Char('x') => {
-                state.stop_selected_task().await?;
             }
             F(1) => {
                 state.show_help().await?;
@@ -167,8 +239,9 @@ impl App {
     async fn draw(&self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         let state = self.state.read().await;
         let storage = self.storage.clone();
+        let market_data = &self.market_data;
         terminal.draw(|frame| {
-            crate::ui::render(frame, &state, &storage);
+            crate::ui::render(frame, &state, &storage, market_data);
         })?;
         Ok(())
     }

@@ -5,9 +5,10 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::app::state::AppState;
+use standx_point_mm_strategy::MarketDataHub;
 
 /// Render the status bar at the top of the screen
-pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
+pub fn render(frame: &mut Frame, area: Rect, state: &AppState, market_data: &MarketDataHub) {
     let block = Block::default()
         .borders(Borders::BOTTOM)
         .border_style(Style::default().fg(Color::Blue));
@@ -22,7 +23,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         crate::app::state::AppMode::Dialog => "DIALOG",
     };
 
-    let title_spans = vec![
+    let mut title_spans = vec![
         Span::styled(
             "StandX MM Strategy",
             Style::default()
@@ -40,6 +41,48 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
             Style::default().fg(Color::Green),
         ),
     ];
+
+    // Add price information
+    title_spans.push(Span::raw(" | "));
+    title_spans.push(Span::styled(
+        "Prices: ",
+        Style::default().fg(Color::Magenta),
+    ));
+
+    // Common symbols to display
+    let symbols = vec!["BTC-USD", "ETH-USD"];
+    for (i, symbol) in symbols.iter().enumerate() {
+        if i > 0 {
+            title_spans.push(Span::raw(", "));
+        }
+
+        if let Some(price) = market_data.get_price(symbol) {
+            // Display mark price if available (or fallback to index price)
+            let display_price = if price.mark_price != rust_decimal::Decimal::ZERO {
+                price.mark_price
+            } else {
+                price.index_price
+            };
+
+            if display_price != rust_decimal::Decimal::ZERO {
+                title_spans.push(Span::styled(
+                    format!("{}: {:.2}", symbol, display_price),
+                    Style::default().fg(Color::White),
+                ));
+            } else {
+                title_spans.push(Span::styled(
+                    format!("{}: --", symbol),
+                    Style::default().fg(Color::Gray),
+                ));
+            }
+        } else {
+            title_spans.push(Span::styled(
+                format!("{}: --", symbol),
+                Style::default().fg(Color::Gray),
+            ));
+        }
+    }
+
     lines.push(Line::from(title_spans));
 
     // Status message line

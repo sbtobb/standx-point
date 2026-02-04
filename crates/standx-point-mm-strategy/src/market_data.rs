@@ -115,6 +115,11 @@ impl MarketDataHub {
         rx
     }
 
+    /// Get the current price for a symbol if available.
+    pub fn get_price(&self, symbol: &str) -> Option<SymbolPrice> {
+        self.price_txs.get(symbol).map(|tx| tx.borrow().clone())
+    }
+
     /// Trigger a graceful shutdown of the internal worker.
     pub fn shutdown(&self) {
         self.shutdown.cancel();

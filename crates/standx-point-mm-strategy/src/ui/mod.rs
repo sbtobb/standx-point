@@ -3,11 +3,12 @@ use ratatui::Frame;
 
 use crate::app::state::AppState;
 use crate::state::storage::Storage;
+use standx_point_mm_strategy::MarketDataHub;
 
 pub mod components;
 
 /// Main render function - called every frame
-pub fn render(frame: &mut Frame, state: &AppState, storage: &Storage) {
+pub fn render(frame: &mut Frame, state: &AppState, storage: &Storage, market_data: &MarketDataHub) {
     let area = frame.area();
 
     // Split the screen into main sections
@@ -26,7 +27,7 @@ pub fn render(frame: &mut Frame, state: &AppState, storage: &Storage) {
     .areas(main_area);
 
     // Render each component
-    components::status_bar::render(frame, status_area, state);
+    components::status_bar::render(frame, status_area, state, market_data);
     components::sidebar::render(frame, sidebar_area, state, storage);
     components::detail_view::render(frame, detail_area, state, storage);
     components::menu_bar::render(frame, menu_area, state);
