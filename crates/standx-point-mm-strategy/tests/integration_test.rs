@@ -5,8 +5,6 @@
 [UPDATE]: When adding new integration scenarios
 */
 
-use std::time::Duration;
-use tokio::time::timeout;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
