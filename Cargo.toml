@@ -10,4 +10,11 @@ standx-point-adapter = { path = "crates/standx-point-adapter" }
 standx-point-mm-strategy = { path = "crates/standx-point-mm-strategy" }
 standx-point-gui = { path = "crates/standx-point-gui" }
 
+[patch.crates-io]
+core-foundation = { git = "https://github.com/servo/core-foundation-rs", tag = "core-text-v21.0.0" }
+core-foundation-sys = { git = "https://github.com/servo/core-foundation-rs", tag = "core-text-v21.0.0" }
+core-graphics = { git = "https://github.com/servo/core-foundation-rs", tag = "core-text-v21.0.0" }
+core-graphics-types = { git = "https://github.com/servo/core-foundation-rs", tag = "core-text-v21.0.0" }
+core-text = { git = "https://github.com/servo/core-foundation-rs", tag = "core-text-v21.0.0" }
+
 
