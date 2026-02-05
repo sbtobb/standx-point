@@ -6,7 +6,6 @@
 */
 
 use std::time::Duration;
-use tokio::time::{sleep, timeout};
 
 /// Test: Graceful shutdown cancels all orders
 #[tokio::test]
@@ -32,7 +31,7 @@ async fn test_shutdown_timeout() {
     // Verify that shutdown respects the timeout and forces exit
     // if graceful shutdown takes too long
 
-    let shutdown_timeout = Duration::from_secs(30);
+    let _shutdown_timeout = Duration::from_secs(30);
 
     // Simulate slow order cancellation
     // Verify that after timeout, shutdown completes forcefully
