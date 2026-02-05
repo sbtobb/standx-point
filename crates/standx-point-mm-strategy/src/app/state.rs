@@ -930,7 +930,7 @@ mod tests {
         });
 
         // Simulate typing "abc" into name field
-        if let Some(ModalType::AccountForm { form, is_edit }) = state.modal.as_mut() {
+        if let Some(ModalType::AccountForm { form, is_edit: _ }) = state.modal.as_mut() {
             form.name = "abc".to_string();
             form.focused_field = 1;
         }
@@ -978,7 +978,7 @@ mod tests {
         });
 
         // Simulate typing "abc" into name field
-        if let Some(ModalType::AccountForm { form, is_edit }) = state.modal.as_mut() {
+        if let Some(ModalType::AccountForm { form, is_edit: _ }) = state.modal.as_mut() {
             form.name = "abc".to_string();
             form.focused_field = 1;
         }
