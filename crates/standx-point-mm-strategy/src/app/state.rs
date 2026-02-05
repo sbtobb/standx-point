@@ -508,42 +508,6 @@ impl AppState {
                     }
                     form.error_message = None;
                 }
-                KeyCode::Char(ch)
-                    if !key.modifiers.contains(KeyModifiers::CONTROL)
-                        && !key.modifiers.contains(KeyModifiers::ALT) =>
-                {
-                    if !(is_edit && form.focused_field == 0) {
-                        if form.replace_on_next_input {
-                            match form.focused_field {
-                                0 => {
-                                    form.id.clear();
-                                    form.id.push(ch);
-                                }
-                                1 => {
-                                    form.name.clear();
-                                    form.name.push(ch);
-                                }
-                                2 => {
-                                    form.jwt_token.clear();
-                                    form.jwt_token.push(ch);
-                                }
-                                _ => {
-                                    form.signing_key.clear();
-                                    form.signing_key.push(ch);
-                                }
-                            }
-                            form.replace_on_next_input = false;
-                        } else {
-                            match form.focused_field {
-                                0 => form.id.push(ch),
-                                1 => form.name.push(ch),
-                                2 => form.jwt_token.push(ch),
-                                _ => form.signing_key.push(ch),
-                            }
-                        }
-                    }
-                    form.error_message = None;
-                }
                 _ => {}
             }
         }
