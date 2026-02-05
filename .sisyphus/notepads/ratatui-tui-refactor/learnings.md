@@ -198,3 +198,4 @@ Key changes:
 - Keep entire workspace warnings clean by checking `cargo test --workspace` regularly and addressing warnings. For unused test utilities in shared modules that are used by some but not all test binaries, add `#[allow(dead_code)]` to suppress warnings.
 - AccountForm Ctrl+A select-all semantics: Added `replace_on_next_input` boolean field to AccountForm. Pressing Ctrl+A sets the flag, next character replaces entire field, Backspace clears entire field if flag is set, and flag resets after action. Respects edit mode read-only ID field.
 - Added tests for select-all functionality: test_account_form_select_all_replace and test_account_form_select_all_backspace
+- Implemented Ctrl+A select-all semantics for AccountForm using AppState-level replace_on_next_input flag to avoid changing AccountForm struct. When active and user presses Ctrl+A, next printable char replaces entire focused field, Backspace clears field, and flag resets on focus change or Esc.
