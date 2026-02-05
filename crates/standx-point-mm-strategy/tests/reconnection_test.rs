@@ -6,7 +6,7 @@
 */
 
 use std::time::Duration;
-use tokio::time::{sleep, timeout};
+
 
 /// Test: WebSocket reconnection with exponential backoff
 #[tokio::test]
