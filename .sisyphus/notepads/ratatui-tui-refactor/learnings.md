@@ -186,3 +186,14 @@ Key changes:
 - Added 'v' key as an alias for the same functionality
 - Improved user feedback by showing a status message when no item is selected
 
+- TUI 退出：在事件处理里设置 `exit_requested`，释放 `RwLock` 后再执行 `TaskManager::shutdown_and_wait()`、持久化 `Running -> Stopped`、`MarketDataHub::shutdown()`，最后再设置 `should_exit`，避免在 render 中做清理。
+- 并发规则：不要在持有 `RwLock` guard 时 `await` 可能阻塞的 shutdown/IO；先提取所需数据再 `await`，避免死锁。
+- Keep cargo test -p standx-point-mm-strategy clean from warnings by removing unused imports/variables in tests and dead code in test modules
+- Account form Ctrl+K shortcut: Implemented Ctrl+K to clear currently focused field in insert mode. Respect edit mode read-only ID field and clear error message after clearing.
+- Task form Ctrl+K shortcut: Implemented Ctrl+K to clear currently focused field in insert mode, following the same pattern as AccountForm. Respect edit mode read-only ID field (field 0) and clear error message after clearing.
+- Cargo workspace patches: Patch overrides for crates-io must be placed in the root Cargo.toml. Patch blocks in non-root crates are ignored and produce a 'patch for the non root package will be ignored' warning.
+- [patch.crates-io] only applies to crates from crates.io; git dependencies (like zed-font-kit referenced via git URL) aren't affected by crates-io patch blocks, which is why the patch was unused and produced a warning.
+- Keep workspace warnings clean by renaming unused variables with `_` prefix (e.g., `client` → `_client`) in examples or test code that isn't actively using the variable yet.
+- For unused import warnings in Rust: Move imports used only in tests inside the `#[cfg(test)]` test module to avoid warnings when compiling in non-test mode.
+- Keep entire workspace warnings clean by checking `cargo test --workspace` regularly and addressing warnings. For unused test utilities in shared modules that are used by some but not all test binaries, add `#[allow(dead_code)]` to suppress warnings.
+- AccountForm Ctrl+A select-all semantics: Added `replace_on_next_input` boolean field to AccountForm. Pressing Ctrl+A sets the flag, next character replaces entire field, Backspace clears entire field if flag is set, and flag resets after action. Respects edit mode read-only ID field.

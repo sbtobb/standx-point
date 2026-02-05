@@ -7,6 +7,7 @@
 /// **Update**: Implement task form create flow with validation.
 /// **Update**: Implement task edit flow with storage updates.
 /// **Update**: Add task deletion confirmation and storage removal.
+/// **Update**: Track quit confirmations and exit requests.
 use crate::state::storage::{Account, Storage, Task};
 use crate::ui::components::account_form::AccountForm;
 use crate::ui::components::task_form::TaskForm;
@@ -52,6 +53,9 @@ pub enum ConfirmAction {
     DeleteAccount { account_id: String },
     /// Delete a specific task by ID
     DeleteTask { task_id: String },
+    /// Quit the application after graceful shutdown
+    #[allow(dead_code)]
+    Quit,
 }
 
 /// Modal types that can be displayed
@@ -91,6 +95,8 @@ pub struct AppState {
     pub show_help: bool,
     /// Current modal (if any)
     pub modal: Option<ModalType>,
+    /// Exit requested via UI (graceful shutdown path)
+    pub exit_requested: bool,
     /// Reference to storage for data access
     storage: Arc<Storage>,
     /// Cached accounts for synchronous access in render
@@ -121,6 +127,7 @@ impl AppState {
             keypress_flash: None,
             show_help: false,
             modal: None,
+            exit_requested: false,
             storage,
             accounts,
             tasks,
@@ -295,10 +302,7 @@ impl AppState {
         match self.sidebar_mode {
             SidebarMode::Accounts => {
                 if let Some(account) = self.accounts.get(self.selected_index) {
-                    let message = format!(
-                        "Delete account '{}' ({})",
-                        account.id, account.name
-                    );
+                    let message = format!("Delete account '{}' ({})", account.id, account.name);
                     self.mode = AppMode::Dialog;
                     self.modal = Some(ModalType::Confirm {
                         title: "Delete Account".to_string(),
@@ -412,18 +416,28 @@ impl AppState {
                 }
                 KeyCode::Backspace => {
                     if !(is_edit && form.focused_field == 0) {
-                        match form.focused_field {
-                            0 => {
-                                form.id.pop();
+                        if form.replace_on_next_input {
+                            match form.focused_field {
+                                0 => form.id.clear(),
+                                1 => form.name.clear(),
+                                2 => form.jwt_token.clear(),
+                                _ => form.signing_key.clear(),
                             }
-                            1 => {
-                                form.name.pop();
-                            }
-                            2 => {
-                                form.jwt_token.pop();
-                            }
-                            _ => {
-                                form.signing_key.pop();
+                            form.replace_on_next_input = false;
+                        } else {
+                            match form.focused_field {
+                                0 => {
+                                    form.id.pop();
+                                }
+                                1 => {
+                                    form.name.pop();
+                                }
+                                2 => {
+                                    form.jwt_token.pop();
+                                }
+                                _ => {
+                                    form.signing_key.pop();
+                                }
                             }
                         }
                     }
@@ -445,11 +459,87 @@ impl AppState {
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
                     if !(is_edit && form.focused_field == 0) {
+                        if form.replace_on_next_input {
+                            match form.focused_field {
+                                0 => {
+                                    form.id.clear();
+                                    form.id.push(ch);
+                                }
+                                1 => {
+                                    form.name.clear();
+                                    form.name.push(ch);
+                                }
+                                2 => {
+                                    form.jwt_token.clear();
+                                    form.jwt_token.push(ch);
+                                }
+                                _ => {
+                                    form.signing_key.clear();
+                                    form.signing_key.push(ch);
+                                }
+                            }
+                            form.replace_on_next_input = false;
+                        } else {
+                            match form.focused_field {
+                                0 => form.id.push(ch),
+                                1 => form.name.push(ch),
+                                2 => form.jwt_token.push(ch),
+                                _ => form.signing_key.push(ch),
+                            }
+                        }
+                    }
+                    form.error_message = None;
+                }
+                KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if !(is_edit && form.focused_field == 0) {
                         match form.focused_field {
-                            0 => form.id.push(ch),
-                            1 => form.name.push(ch),
-                            2 => form.jwt_token.push(ch),
-                            _ => form.signing_key.push(ch),
+                            0 => form.id.clear(),
+                            1 => form.name.clear(),
+                            2 => form.jwt_token.clear(),
+                            _ => form.signing_key.clear(),
+                        }
+                        form.replace_on_next_input = false;
+                    }
+                    form.error_message = None;
+                }
+                KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if !(is_edit && form.focused_field == 0) {
+                        form.replace_on_next_input = true;
+                    }
+                    form.error_message = None;
+                }
+                KeyCode::Char(ch)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    if !(is_edit && form.focused_field == 0) {
+                        if form.replace_on_next_input {
+                            match form.focused_field {
+                                0 => {
+                                    form.id.clear();
+                                    form.id.push(ch);
+                                }
+                                1 => {
+                                    form.name.clear();
+                                    form.name.push(ch);
+                                }
+                                2 => {
+                                    form.jwt_token.clear();
+                                    form.jwt_token.push(ch);
+                                }
+                                _ => {
+                                    form.signing_key.clear();
+                                    form.signing_key.push(ch);
+                                }
+                            }
+                            form.replace_on_next_input = false;
+                        } else {
+                            match form.focused_field {
+                                0 => form.id.push(ch),
+                                1 => form.name.push(ch),
+                                2 => form.jwt_token.push(ch),
+                                _ => form.signing_key.push(ch),
+                            }
                         }
                     }
                     form.error_message = None;
@@ -541,20 +631,17 @@ impl AppState {
                         form.error_message = Some(message);
                     }
                 },
-                KeyCode::Char(ch)
-                    if !key.modifiers.contains(KeyModifiers::CONTROL)
-                        && !key.modifiers.contains(KeyModifiers::ALT) =>
-                {
+                KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if !(is_edit && form.focused_field == 0) {
                         match form.focused_field {
-                            0 => form.id.push(ch),
-                            1 => form.symbol.push(ch),
-                            2 => form.account_id.push(ch),
-                            3 => form.risk_level.push(ch),
-                            4 => form.max_position_usd.push(ch),
-                            5 => form.price_jump_threshold_bps.push(ch),
-                            6 => form.base_qty.push(ch),
-                            _ => form.tiers.push(ch),
+                            0 => form.id.clear(),
+                            1 => form.symbol.clear(),
+                            2 => form.account_id.clear(),
+                            3 => form.risk_level.clear(),
+                            4 => form.max_position_usd.clear(),
+                            5 => form.price_jump_threshold_bps.clear(),
+                            6 => form.base_qty.clear(),
+                            _ => form.tiers.clear(),
                         }
                     }
                     form.error_message = None;
@@ -585,8 +672,7 @@ impl AppState {
                     Ok(()) => match self.storage.list_accounts().await {
                         Ok(accounts) => {
                             self.accounts = accounts;
-                            self.status_message =
-                                Some(format!("Account updated: {}", account_id));
+                            self.status_message = Some(format!("Account updated: {}", account_id));
                             self.close_account_form_modal();
                         }
                         Err(err) => {
@@ -604,8 +690,7 @@ impl AppState {
                             self.accounts = accounts;
                             let account_id =
                                 pending_account_id.unwrap_or_else(|| "account".to_string());
-                            self.status_message =
-                                Some(format!("Account created: {}", account_id));
+                            self.status_message = Some(format!("Account created: {}", account_id));
                             self.close_account_form_modal();
                         }
                         Err(err) => {
@@ -623,10 +708,7 @@ impl AppState {
             let task_id = pending_task_id.unwrap_or_else(|| task.id.clone());
             let account_id = pending_task_account_id.unwrap_or_else(|| task.account_id.clone());
             if self.storage.get_account(&account_id).await.is_none() {
-                self.set_task_form_error(format!(
-                    "Account '{}' not found",
-                    account_id
-                ));
+                self.set_task_form_error(format!("Account '{}' not found", account_id));
             } else if pending_task_is_edit {
                 let Task {
                     symbol,
@@ -740,6 +822,10 @@ impl AppState {
                         }
                     }
                 }
+                Some(ConfirmAction::Quit) => {
+                    self.exit_requested = true;
+                    self.status_message = Some("Shutting down...".to_string());
+                }
                 None => {}
             }
         }
@@ -845,14 +931,14 @@ mod tests {
 
         // Arm the prefix
         state.pending_g_ticks = 4;
-        
+
         // Jump to first should clear the prefix
         state.jump_to_first_item().await.unwrap();
         assert_eq!(state.pending_g_ticks, 0);
 
         // Arm again
         state.pending_g_ticks = 4;
-        
+
         // Jump to last should clear the prefix
         state.jump_to_last_item().await.unwrap();
         assert_eq!(state.pending_g_ticks, 0);

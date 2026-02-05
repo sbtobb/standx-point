@@ -18,7 +18,8 @@ pub struct AccountForm {
     pub jwt_token: String,
     pub signing_key: String,
     pub error_message: Option<String>,
-    pub focused_field: usize, // 0=id, 1=name, 2=jwt, 3=signing_key
+    pub focused_field: usize,        // 0=id, 1=name, 2=jwt, 3=signing_key
+    pub replace_on_next_input: bool, // Whether next character input replaces entire field (select-all semantics)
 }
 
 impl AccountForm {
@@ -30,6 +31,7 @@ impl AccountForm {
             signing_key: String::new(),
             error_message: None,
             focused_field: 0,
+            replace_on_next_input: false,
         }
     }
 
@@ -41,6 +43,7 @@ impl AccountForm {
             signing_key: account.signing_key.clone(),
             error_message: None,
             focused_field: 0,
+            replace_on_next_input: false,
         }
     }
 
@@ -254,6 +257,7 @@ mod tests {
             signing_key: "key".to_string(),
             error_message: None,
             focused_field: 0,
+            replace_on_next_input: false,
         };
 
         let result = form.to_account();
