@@ -4,10 +4,13 @@
 [POS]:    Execution layer - per-task trading orchestration
 [UPDATE]: When changing startup/shutdown guarantees or supervision semantics
 [UPDATE]: 2026-02-05 Add per-task stop capability keyed by task_id
+[UPDATE]: 2026-02-06 Delegate quoting to MarketMakingStrategy run loop
 */
 
 use crate::config::{CredentialsConfig, StrategyConfig, TaskConfig};
 use crate::market_data::MarketDataHub;
+use crate::order_state::OrderTracker;
+use crate::strategy::{MarketMakingStrategy, RiskLevel, StrategyMode};
 use anyhow::{Context as _, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rust_decimal::Decimal;
@@ -16,7 +19,8 @@ use standx_point_adapter::{
     OrderType, Side, StandxClient, SymbolPrice, TimeInForce,
 };
 use std::collections::HashMap;
-use std::sync::Once;
+use std::str::FromStr;
+use std::sync::{Arc, Once};
 use std::time::Duration;
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
@@ -46,6 +50,12 @@ pub enum TaskState {
     Stopping,
     Stopped,
     Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskRuntimeStatus {
+    Running,
+    Finished,
 }
 
 #[derive(Debug)]
@@ -93,6 +103,30 @@ impl TaskManager {
 
     pub fn shutdown_token(&self) -> CancellationToken {
         self.shutdown.clone()
+    }
+
+    pub fn runtime_status(&self, task_id: &str) -> Option<TaskRuntimeStatus> {
+        self.tasks.get(task_id).map(|task| {
+            if task.handle.is_finished() {
+                TaskRuntimeStatus::Finished
+            } else {
+                TaskRuntimeStatus::Running
+            }
+        })
+    }
+
+    pub fn runtime_status_snapshot(&self) -> HashMap<String, TaskRuntimeStatus> {
+        self.tasks
+            .iter()
+            .map(|(task_id, task)| {
+                let status = if task.handle.is_finished() {
+                    TaskRuntimeStatus::Finished
+                } else {
+                    TaskRuntimeStatus::Running
+                };
+                (task_id.clone(), status)
+            })
+            .collect()
     }
 
     /// Spawn tasks from configuration using the default StandxClient builder.
@@ -363,8 +397,35 @@ impl Task {
 
         if let Err(err) = self.startup_sequence().await {
             self.state = TaskState::Failed;
+            tracing::error!(
+                task_uuid = %self.id,
+                task_id = %self.config.id,
+                symbol = %self.config.symbol,
+                error = %err,
+                "startup sequence failed"
+            );
             return Err(err).context("startup sequence failed");
         }
+
+        let base_qty = Decimal::from_str(&self.config.sizing.base_qty)
+            .with_context(|| format!("parse sizing.base_qty task_id={}", self.config.id))?;
+        let risk_level = self
+            .config
+            .risk
+            .level
+            .parse::<RiskLevel>()
+            .map_err(|_| anyhow!("invalid risk level: {}", self.config.risk.level))?;
+        let order_tracker = Arc::new(Mutex::new(OrderTracker::new()));
+        let mode = StrategyMode::aggressive_default();
+        let mut strategy = MarketMakingStrategy::new_with_params(
+            self.config.symbol.clone(),
+            base_qty,
+            risk_level,
+            self.price_rx.clone(),
+            order_tracker,
+            mode,
+            self.config.sizing.tiers,
+        );
 
         self.state = TaskState::Running;
         tracing::info!(
@@ -374,36 +435,30 @@ impl Task {
             "task running"
         );
 
-        loop {
-            tokio::select! {
-                _ = self.shutdown.cancelled() => {
-                    self.state = TaskState::Stopping;
-                    tracing::info!(
-                        task_uuid = %self.id,
-                        task_id = %self.config.id,
-                        symbol = %self.config.symbol,
-                        "task stopping"
-                    );
+        let strategy_result = strategy.run(&self.client, self.shutdown.clone()).await;
 
-                    let shutdown_res = self.shutdown_sequence().await;
-                    self.state = match shutdown_res {
-                        Ok(()) => TaskState::Stopped,
-                        Err(_) => TaskState::Failed,
-                    };
+        self.state = TaskState::Stopping;
+        tracing::info!(
+            task_uuid = %self.id,
+            task_id = %self.config.id,
+            symbol = %self.config.symbol,
+            "task stopping"
+        );
 
-                    return shutdown_res;
-                }
-                changed = self.price_rx.changed() => {
-                    if changed.is_err() {
-                        // Sender dropped (e.g. hub stopped). Keep waiting for shutdown signal.
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                        continue;
-                    }
+        let shutdown_res = self.shutdown_sequence().await;
+        self.state = if strategy_result.is_ok() && shutdown_res.is_ok() {
+            TaskState::Stopped
+        } else {
+            TaskState::Failed
+        };
 
-                    let _price = self.price_rx.borrow().clone();
-                    // Strategy logic is intentionally not implemented here.
-                }
-            }
+        match (strategy_result, shutdown_res) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), Ok(())) => Err(err).context("strategy run failed"),
+            (Ok(()), Err(err)) => Err(err),
+            (Err(err), Err(shutdown_err)) => Err(err).context(format!(
+                "strategy run failed; shutdown error: {shutdown_err}"
+            )),
         }
     }
 

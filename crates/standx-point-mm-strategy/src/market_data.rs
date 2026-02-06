@@ -168,6 +168,7 @@ impl Drop for MarketDataHub {
 struct MarketDataHubWorker {
     ws_url: String,
     tracked_symbols: HashSet<String>,
+    price_sampled_symbols: HashSet<String>,
     price_txs: HashMap<String, watch::Sender<SymbolPrice>>,
     cmd_rx: mpsc::UnboundedReceiver<HubCommand>,
     connection_state: watch::Sender<ConnectionState>,
@@ -185,6 +186,7 @@ impl MarketDataHubWorker {
         Self {
             ws_url,
             tracked_symbols: HashSet::new(),
+            price_sampled_symbols: HashSet::new(),
             price_txs: HashMap::new(),
             cmd_rx,
             connection_state,
@@ -372,7 +374,7 @@ impl MarketDataHubWorker {
         Ok(())
     }
 
-    fn handle_ws_message(&self, message: WebSocketMessage) {
+    fn handle_ws_message(&mut self, message: WebSocketMessage) {
         match message {
             WebSocketMessage::Price { symbol, data } => {
                 match serde_json::from_value::<PriceData>(data) {
@@ -381,6 +383,18 @@ impl MarketDataHubWorker {
                             debug!(%symbol, "Failed to parse decimals from price payload");
                             return;
                         };
+
+                        if !self.price_sampled_symbols.contains(&symbol) {
+                            self.price_sampled_symbols.insert(symbol.clone());
+                            info!(
+                                %symbol,
+                                mark_price = %price.mark_price,
+                                index_price = %price.index_price,
+                                last_price = ?price.last_price,
+                                mid_price = ?price.mid_price,
+                                "Market data price sample received"
+                            );
+                        }
 
                         if let Some(tx) = self.price_txs.get(&symbol) {
                             let _ = tx.send(price);

@@ -5,6 +5,7 @@
           plus uptime accounting for reward eligibility.
 [POS]:    Strategy layer - conservative market making core loop.
 [UPDATE]: When changing tier ranges, sizing rules, drift thresholds, or cooldown/mode semantics.
+[UPDATE]: 2026-02-06 Align fusion tiers, weights, and fill backoff handling.
 */
 
 use std::collections::{HashMap, HashSet};
@@ -29,10 +30,11 @@ use crate::order_state::{OrderState, OrderTracker};
 use crate::risk::{RiskManager, RiskState};
 
 const BPS_DENOMINATOR: i64 = 10_000;
-const QUOTE_REFRESH_INTERVAL: Duration = Duration::from_secs(4); // 3-5s target
+const QUOTE_REFRESH_INTERVAL: Duration = Duration::from_secs(5); // >=5s min resting
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 
-const FULL_FILL_COOLDOWN: Duration = Duration::from_secs(10);
 const SURVIVAL_AFTER_FILL: Duration = Duration::from_secs(60);
+const FILL_BACKOFF_DURATION: Duration = Duration::from_secs(600);
 
 // Replace quotes when desired price drifts by >= 1 bps.
 const REPLACE_DRIFT_BPS: i64 = 1;
@@ -95,15 +97,11 @@ enum Tier {
 }
 
 impl Tier {
-    fn all() -> [Tier; 3] {
-        [Tier::L1, Tier::L2, Tier::L3]
-    }
-
     fn min_max_bps(self) -> (Decimal, Decimal) {
         match self {
             Tier::L1 => (Decimal::ZERO, Decimal::from(5)),
-            Tier::L2 => (Decimal::from(5), Decimal::from(10)),
-            Tier::L3 => (Decimal::from(10), Decimal::from(20)),
+            Tier::L2 => (Decimal::from(5), Decimal::from(8)),
+            Tier::L3 => (Decimal::from(8), Decimal::from(10)),
         }
     }
 
@@ -113,6 +111,18 @@ impl Tier {
             Tier::L2 => "l2",
             Tier::L3 => "l3",
         }
+    }
+}
+
+const TIERS_L1: [Tier; 1] = [Tier::L1];
+const TIERS_L1_L2: [Tier; 2] = [Tier::L1, Tier::L2];
+const TIERS_ALL: [Tier; 3] = [Tier::L1, Tier::L2, Tier::L3];
+
+fn normalize_tier_count(tiers: u8) -> usize {
+    match tiers {
+        0 | 1 => 1,
+        2 => 2,
+        _ => 3,
     }
 }
 
@@ -223,7 +233,7 @@ impl UptimeTracker {
     }
 }
 
-trait OrderExecutor {
+trait OrderExecutor: Send + Sync {
     fn new_order(
         &self,
         req: NewOrderRequest,
@@ -258,6 +268,7 @@ impl OrderExecutor for StandxClient {
 pub struct MarketMakingStrategy {
     symbol: String,
     base_qty: Decimal,
+    tier_count: usize,
     risk_level: RiskLevel,
     price_rx: watch::Receiver<SymbolPrice>,
     order_tracker: Arc<Mutex<OrderTracker>>,
@@ -267,7 +278,8 @@ pub struct MarketMakingStrategy {
 
     preferred_mode: StrategyMode,
     survival_until: Option<tokio::time::Instant>,
-    cooldown_until: Option<tokio::time::Instant>,
+    bid_backoff_until: Option<tokio::time::Instant>,
+    ask_backoff_until: Option<tokio::time::Instant>,
     live_quotes: HashMap<QuoteSlot, LiveQuote>,
     handled_fills: HashSet<String>,
 }
@@ -285,6 +297,7 @@ impl MarketMakingStrategy {
         Self {
             symbol: String::new(),
             base_qty: Decimal::ZERO,
+            tier_count: 3,
             risk_level: RiskLevel::Conservative,
             price_rx: rx,
             order_tracker: Arc::new(Mutex::new(OrderTracker::new())),
@@ -293,7 +306,8 @@ impl MarketMakingStrategy {
             mode,
             preferred_mode: mode,
             survival_until: None,
-            cooldown_until: None,
+            bid_backoff_until: None,
+            ask_backoff_until: None,
             live_quotes: HashMap::new(),
             handled_fills: HashSet::new(),
         }
@@ -306,11 +320,13 @@ impl MarketMakingStrategy {
         price_rx: watch::Receiver<SymbolPrice>,
         order_tracker: Arc<Mutex<OrderTracker>>,
         mode: StrategyMode,
+        tier_count: u8,
     ) -> Self {
         let now = tokio::time::Instant::now();
         Self {
             symbol,
             base_qty,
+            tier_count: normalize_tier_count(tier_count),
             risk_level,
             price_rx,
             order_tracker,
@@ -319,7 +335,8 @@ impl MarketMakingStrategy {
             mode,
             preferred_mode: mode,
             survival_until: None,
-            cooldown_until: None,
+            bid_backoff_until: None,
+            ask_backoff_until: None,
             live_quotes: HashMap::new(),
             handled_fills: HashSet::new(),
         }
@@ -350,6 +367,8 @@ impl MarketMakingStrategy {
     ) -> Result<()> {
         let mut refresh = tokio::time::interval(QUOTE_REFRESH_INTERVAL);
         refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         // Try to quote immediately using the current snapshot.
         self.refresh_from_latest(executor, tokio::time::Instant::now())
@@ -378,6 +397,16 @@ impl MarketMakingStrategy {
                         self.refresh_from_latest(executor, tokio::time::Instant::now()).await?;
                     }
                 }
+                _ = heartbeat.tick() => {
+                    let snapshot = self.uptime_snapshot();
+                    info!(
+                        symbol = %self.symbol,
+                        mode = ?self.mode,
+                        live_quotes = self.live_quotes.len(),
+                        uptime_ratio = %snapshot.uptime_ratio,
+                        "strategy heartbeat"
+                    );
+                }
             }
         }
     }
@@ -389,16 +418,8 @@ impl MarketMakingStrategy {
     ) -> Result<()> {
         self.update_mode_for_timers(now);
 
-        if self.in_cooldown(now) {
-            self.cancel_all_quotes(executor).await;
-            self.uptime_tracker.update(now, false);
-            return Ok(());
-        }
-
         // Check fills before placing new quotes.
-        if self.handle_fills(executor, now).await? {
-            return Ok(());
-        }
+        self.handle_fills(now).await?;
 
         let mark_price = self.price_rx.borrow().mark_price;
         if mark_price <= Decimal::ZERO {
@@ -433,20 +454,14 @@ impl MarketMakingStrategy {
             self.survival_until = None;
             self.mode = self.preferred_mode;
         }
+
+        self.update_backoff_for_timers(now);
     }
 
-    fn in_cooldown(&self, now: tokio::time::Instant) -> bool {
-        self.cooldown_until.is_some_and(|until| now < until)
-    }
+    async fn handle_fills(&mut self, now: tokio::time::Instant) -> Result<()> {
+        let mut filled_slots = Vec::new();
 
-    async fn handle_fills(
-        &mut self,
-        executor: &dyn OrderExecutor,
-        now: tokio::time::Instant,
-    ) -> Result<bool> {
-        let mut filled: Option<String> = None;
-
-        for quote in self.live_quotes.values() {
+        for (slot, quote) in self.live_quotes.iter() {
             let cl_ord_id = quote.cl_ord_id.as_str();
             if self.handled_fills.contains(cl_ord_id) {
                 continue;
@@ -458,29 +473,31 @@ impl MarketMakingStrategy {
             };
 
             if matches!(state, Some(OrderState::Filled { .. })) {
-                filled = Some(cl_ord_id.to_string());
-                break;
+                filled_slots.push((*slot, quote.cl_ord_id.clone()));
             }
         }
 
-        let Some(filled_id) = filled else {
-            return Ok(false);
-        };
-
-        self.handled_fills.insert(filled_id);
-        self.risk_manager.record_fill(std::time::Instant::now());
-        self.cooldown_until = Some(now + FULL_FILL_COOLDOWN);
-
-        if !self.mode.is_survival() {
-            self.mode = StrategyMode::survival_default();
-            self.survival_until = Some(now + SURVIVAL_AFTER_FILL);
+        if filled_slots.is_empty() {
+            return Ok(());
         }
 
-        info!(symbol = %self.symbol, ?self.mode, cooldown_secs = FULL_FILL_COOLDOWN.as_secs(), "full fill detected; entering cooldown");
+        for (slot, cl_ord_id) in filled_slots {
+            self.handled_fills.insert(cl_ord_id);
+            self.risk_manager.record_fill(std::time::Instant::now());
+            self.apply_fill_backoff(slot.side, now);
+            self.live_quotes.remove(&slot);
+        }
 
-        self.cancel_all_quotes(executor).await;
-        self.uptime_tracker.update(now, false);
-        Ok(true)
+        self.enter_survival(now);
+
+        info!(
+            symbol = %self.symbol,
+            ?self.mode,
+            backoff_secs = FILL_BACKOFF_DURATION.as_secs(),
+            "full fill detected; applying side backoff"
+        );
+
+        Ok(())
     }
 
     async fn refresh_quotes(
@@ -495,9 +512,9 @@ impl MarketMakingStrategy {
             return Ok(());
         }
 
-        for tier in Tier::all() {
+        for tier in self.active_tiers() {
             for side in [QuoteSide::Bid, QuoteSide::Ask] {
-                let slot = QuoteSlot { tier, side };
+                let slot = QuoteSlot { tier: *tier, side };
                 self.refresh_slot(executor, now, mark_price, slot).await?;
             }
         }
@@ -508,8 +525,8 @@ impl MarketMakingStrategy {
     }
 
     fn is_uptime_active(&self) -> bool {
-        // Require full bilateral ladder (all tiers) to count as uptime.
-        self.live_quotes.len() == Tier::all().len() * 2
+        // Require full bilateral ladder (active tiers) to count as uptime.
+        self.live_quotes.len() == self.active_tiers().len() * 2
     }
 
     async fn refresh_slot(
@@ -521,7 +538,8 @@ impl MarketMakingStrategy {
     ) -> Result<()> {
         let target_bps = self.target_bps_for_tier(slot.tier);
         let desired_price = price_at_bps(mark_price, slot.side.to_order_side(), target_bps);
-        let desired_qty = self.desired_qty_for_bps(target_bps);
+        let desired_qty = self.desired_qty_for_slot(slot.tier, slot.side, target_bps, now);
+        let backoff_active = self.is_backoff_active(slot.side, now);
 
         if desired_qty <= Decimal::ZERO || desired_price <= Decimal::ZERO {
             self.cancel_slot_if_present(executor, slot).await;
@@ -539,7 +557,11 @@ impl MarketMakingStrategy {
             if let Some(tracked) = tracked_state {
                 match tracked.state {
                     OrderState::PartiallyFilled { remaining_qty, .. } => {
-                        effective_qty = remaining_qty;
+                        if backoff_active {
+                            effective_qty = decimal_min(remaining_qty, desired_qty);
+                        } else {
+                            effective_qty = remaining_qty;
+                        }
                     }
                     OrderState::Filled { .. } => {
                         // Filled will be handled by `handle_fills`.
@@ -553,11 +575,12 @@ impl MarketMakingStrategy {
             }
 
             if let Some(still_live) = self.live_quotes.get(&slot) {
+                let wants_reduce = backoff_active && desired_qty < still_live.qty;
                 if should_replace(
                     still_live.price,
                     desired_price,
                     self.replace_drift_threshold_bps(),
-                ) {
+                ) || wants_reduce {
                     self.cancel_slot_if_present(executor, slot).await;
                     self.place_slot(executor, now, slot, desired_price, effective_qty)
                         .await?;
@@ -591,7 +614,18 @@ impl MarketMakingStrategy {
         }
     }
 
-    fn desired_qty_for_bps(&self, bps: Decimal) -> Decimal {
+    fn desired_qty_for_slot(
+        &self,
+        tier: Tier,
+        side: QuoteSide,
+        bps: Decimal,
+        now: tokio::time::Instant,
+    ) -> Decimal {
+        let weight = self.tier_weight(tier);
+        if weight <= Decimal::ZERO {
+            return Decimal::ZERO;
+        }
+
         // Sizing heuristic (inherited):
         // - 0-10 bps: 100%
         // - 10-30 bps: 50%
@@ -606,7 +640,81 @@ impl MarketMakingStrategy {
             Decimal::ZERO
         };
 
-        self.base_qty * multiplier
+        let backoff = if self.is_backoff_active(side, now) {
+            fill_backoff_multiplier()
+        } else {
+            Decimal::ONE
+        };
+
+        self.base_qty * weight * multiplier * backoff
+    }
+
+    fn tier_weight(&self, tier: Tier) -> Decimal {
+        match self.tier_count {
+            1 => match tier {
+                Tier::L1 => Decimal::ONE,
+                _ => Decimal::ZERO,
+            },
+            2 => match tier {
+                Tier::L1 => Decimal::new(6, 1),
+                Tier::L2 => Decimal::new(4, 1),
+                Tier::L3 => Decimal::ZERO,
+            },
+            _ => match tier {
+                Tier::L1 => Decimal::new(4, 1),
+                Tier::L2 => Decimal::new(35, 2),
+                Tier::L3 => Decimal::new(25, 2),
+            },
+        }
+    }
+
+    fn active_tiers(&self) -> &'static [Tier] {
+        match self.tier_count {
+            1 => &TIERS_L1,
+            2 => &TIERS_L1_L2,
+            _ => &TIERS_ALL,
+        }
+    }
+
+    fn enter_survival(&mut self, now: tokio::time::Instant) {
+        if !self.mode.is_survival() {
+            self.mode = StrategyMode::survival_default();
+        }
+        self.survival_until = Some(now + SURVIVAL_AFTER_FILL);
+    }
+
+    fn is_backoff_active(&self, side: QuoteSide, now: tokio::time::Instant) -> bool {
+        match side {
+            QuoteSide::Bid => self.bid_backoff_until.is_some_and(|until| now < until),
+            QuoteSide::Ask => self.ask_backoff_until.is_some_and(|until| now < until),
+        }
+    }
+
+    fn apply_fill_backoff(&mut self, side: QuoteSide, now: tokio::time::Instant) {
+        let until = now + FILL_BACKOFF_DURATION;
+        match side {
+            QuoteSide::Bid => {
+                self.bid_backoff_until = Some(match self.bid_backoff_until {
+                    Some(existing) if existing > until => existing,
+                    _ => until,
+                });
+            }
+            QuoteSide::Ask => {
+                self.ask_backoff_until = Some(match self.ask_backoff_until {
+                    Some(existing) if existing > until => existing,
+                    _ => until,
+                });
+            }
+        }
+    }
+
+    fn update_backoff_for_timers(&mut self, now: tokio::time::Instant) {
+        if self.bid_backoff_until.is_some_and(|until| now >= until) {
+            self.bid_backoff_until = None;
+        }
+        if self.ask_backoff_until.is_some_and(|until| now >= until) {
+            self.ask_backoff_until = None;
+        }
     }
 
     fn replace_drift_threshold_bps(&self) -> Decimal {
@@ -797,6 +905,10 @@ fn should_replace(current_price: Decimal, desired_price: Decimal, threshold_bps:
     drift_bps >= threshold_bps
 }
 
+fn fill_backoff_multiplier() -> Decimal {
+    Decimal::new(3, 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -884,6 +996,7 @@ mod tests {
             rx,
             Arc::new(Mutex::new(OrderTracker::new())),
             StrategyMode::aggressive_default(),
+            3,
         );
 
         let l1 = strategy.target_bps_for_tier(Tier::L1);
@@ -891,8 +1004,8 @@ mod tests {
         let l3 = strategy.target_bps_for_tier(Tier::L3);
 
         assert!(l1 >= dec("0") && l1 <= dec("5"));
-        assert!(l2 >= dec("5") && l2 <= dec("10"));
-        assert!(l3 >= dec("10") && l3 <= dec("20"));
+        assert!(l2 >= dec("5") && l2 <= dec("8"));
+        assert!(l3 >= dec("8") && l3 <= dec("10"));
     }
 
     #[tokio::test]
@@ -918,6 +1031,7 @@ mod tests {
             rx,
             Arc::new(Mutex::new(OrderTracker::new())),
             StrategyMode::aggressive_default(),
+            3,
         );
 
         strategy
@@ -949,7 +1063,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn strategy_full_fill_triggers_cooldown_and_cancels_quotes() {
+    async fn strategy_full_fill_enters_survival_and_backoff() {
         let (_tx, rx) = watch::channel(SymbolPrice {
             base: "BTC".to_string(),
             index_price: dec("100"),
@@ -973,6 +1087,7 @@ mod tests {
             rx,
             tracker.clone(),
             StrategyMode::aggressive_default(),
+            3,
         );
 
         strategy
@@ -982,11 +1097,14 @@ mod tests {
         assert_eq!(executor.new_order_count().await, 6);
 
         // Mark one quote as filled.
+        let slot = QuoteSlot {
+            tier: Tier::L1,
+            side: QuoteSide::Bid,
+        };
         let filled_quote = strategy
             .live_quotes
-            .values()
-            .next()
-            .expect("has quote")
+            .get(&slot)
+            .expect("has l1 bid quote")
             .clone();
 
         let exchange_order = standx_point_adapter::types::models::Order {
@@ -1029,9 +1147,26 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(strategy.in_cooldown(tokio::time::Instant::now()));
         assert!(matches!(strategy.mode, StrategyMode::Survival { .. }));
-        assert!(executor.cancel_count().await > 0);
+        assert!(strategy.survival_until.is_some());
+        assert!(strategy.bid_backoff_until.is_some());
+        assert!(strategy.ask_backoff_until.is_none());
+        assert!(!strategy.live_quotes.is_empty());
+
+        let orders = executor.new_orders.lock().await.clone();
+        let l1_bid_orders = orders
+            .into_iter()
+            .filter(|order| {
+                order
+                    .cl_ord_id
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains(":bid:l1:")
+            })
+            .collect::<Vec<_>>();
+
+        let last = l1_bid_orders.last().expect("has l1 bid orders");
+        assert_eq!(last.qty, dec("0.12"));
     }
 
     #[tokio::test]
@@ -1058,6 +1193,7 @@ mod tests {
             rx,
             tracker.clone(),
             StrategyMode::aggressive_default(),
+            3,
         );
 
         strategy
@@ -1082,7 +1218,7 @@ mod tests {
             created_at: "0".to_string(),
             created_block: 0,
             fill_avg_price: quote.price,
-            fill_qty: dec("0.4"),
+            fill_qty: dec("0.1"),
             id: 777,
             leverage: Decimal::ONE,
             liq_id: 0,
@@ -1131,9 +1267,9 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        // Expect the replacement order to use remaining quantity (1.0 - 0.4 = 0.6).
+        // Expect the replacement order to use remaining quantity (0.4 - 0.1 = 0.3).
         let last = l1_bid.last().expect("has l1 bid orders");
-        assert_eq!(last.qty, dec("0.6"));
+        assert_eq!(last.qty, dec("0.3"));
     }
 
     #[test]
@@ -1175,6 +1311,7 @@ mod tests {
             rx,
             Arc::new(Mutex::new(OrderTracker::new())),
             StrategyMode::aggressive_default(),
+            3,
         );
 
         strategy.risk_manager =

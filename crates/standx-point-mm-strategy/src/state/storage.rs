@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::sync::Mutex;
+use standx_point_adapter::Chain;
 
 /// Account data structure for persistence
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,18 +13,27 @@ pub struct Account {
     pub name: String,
     pub jwt_token: String,
     pub signing_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<Chain>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl Account {
-    pub fn new(id: String, name: String, jwt_token: String, signing_key: String) -> Self {
+    pub fn new(
+        id: String,
+        name: String,
+        jwt_token: String,
+        signing_key: String,
+        chain: Option<Chain>,
+    ) -> Self {
         let now = chrono::Utc::now();
         Self {
             id,
             name,
             jwt_token,
             signing_key,
+            chain,
             created_at: now,
             updated_at: now,
         }

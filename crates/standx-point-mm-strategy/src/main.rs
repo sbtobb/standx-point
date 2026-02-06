@@ -3,6 +3,7 @@
 [OUTPUT]: Running market making tasks with graceful shutdown
 [POS]:    Binary entry point
 [UPDATE]: When changing CLI flags, startup flow, or shutdown handling
+[UPDATE]: 2026-02-05 Configure tracing to log to daily files only
 */
 
 use anyhow::{Context, Result, anyhow};
@@ -10,6 +11,7 @@ use clap::Parser;
 use ratatui::crossterm::ExecutableCommand;
 use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ratatui::{Terminal, backend::CrosstermBackend};
+use std::fs;
 use std::io::stdout;
 use std::path::PathBuf;
 use std::path::Path;
@@ -17,6 +19,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+use tracing_appender::rolling;
 use tracing_subscriber::EnvFilter;
 
 mod app;
@@ -137,8 +140,11 @@ async fn run_tui_mode() -> Result<()> {
 
     // Subscribe to price updates for common symbols (only in normal TUI mode)
     let symbols = vec!["BTC-USD", "ETH-USD"];
-    for symbol in &symbols {
-        app.market_data.subscribe_price(symbol);
+    {
+        let mut hub = app.market_data.lock().await;
+        for symbol in &symbols {
+            hub.subscribe_price(symbol);
+        }
     }
     info!(symbols = ?symbols, "subscribed to price updates for symbols");
 
@@ -165,8 +171,16 @@ async fn run_tui_mode() -> Result<()> {
 
 fn init_tracing(log_level: &str) -> Result<()> {
     let filter = EnvFilter::try_new(log_level).context("invalid log level")?;
+    let log_dir = std::env::current_dir()
+        .context("resolve current directory")?
+        .join("logs");
+    fs::create_dir_all(&log_dir)
+        .with_context(|| format!("create log directory {}", log_dir.display()))?;
+    let file_appender = rolling::daily(&log_dir, "standx-point-mm-strategy.log");
     tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_writer(file_appender)
+        .with_ansi(false)
         .try_init()
         .map_err(|err| anyhow!(err))
         .context("initialize tracing subscriber")?;
