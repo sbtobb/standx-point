@@ -9,6 +9,7 @@ members = [
 standx-point-adapter = { path = "crates/standx-point-adapter" }
 standx-point-mm-strategy = { path = "crates/standx-point-mm-strategy" }
 standx-point-gui = { path = "crates/standx-point-gui" }
+uuid = { version = "1.12", features = ["v4"] }
 
 [patch.crates-io]
 core-foundation = { git = "https://github.com/servo/core-foundation-rs", tag = "core-text-v21.0.0" }
