@@ -58,14 +58,14 @@ fn render_confirmation(frame: &mut Frame, area: Rect, title: &str, message: &str
         Line::from(""),
         Line::from(vec![
             Span::styled("⚠ ", Style::default().fg(Color::Yellow)),
-            Span::styled(message, Style::default().fg(Color::White)),
+            Span::styled(message, Style::default().fg(Color::Yellow)),
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  ", Style::default().fg(Color::Gray)),
+            Span::styled("  ", Style::default().fg(Color::Cyan)),
             Span::styled(
                 "Are you sure you want to proceed?",
-                Style::default().fg(Color::Gray),
+                Style::default().fg(Color::Cyan),
             ),
         ]),
         Line::from(""),
@@ -76,19 +76,19 @@ fn render_confirmation(frame: &mut Frame, area: Rect, title: &str, message: &str
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("Yes  ", Style::default().fg(Color::Gray)),
+            Span::styled("Yes  ", Style::default().fg(Color::Cyan)),
             Span::styled(
                 "[n] ",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("No  ", Style::default().fg(Color::Gray)),
+            Span::styled("No  ", Style::default().fg(Color::Cyan)),
             Span::styled(
                 "[Esc] ",
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("Cancel", Style::default().fg(Color::Gray)),
+            Span::styled("Cancel", Style::default().fg(Color::Cyan)),
         ]),
     ];
 

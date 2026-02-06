@@ -21,9 +21,9 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, _storage: &Storag
                         ListItem::new(Line::from(vec![
                             Span::styled("📁 ", Style::default().fg(Color::Yellow)),
                             Span::raw(&account.name),
-                            Span::styled(" (", Style::default().fg(Color::Gray)),
-                            Span::styled(&account.id, Style::default().fg(Color::Gray)),
-                            Span::styled(")", Style::default().fg(Color::Gray)),
+                            Span::styled(" (", Style::default().fg(Color::Cyan)),
+                            Span::styled(&account.id, Style::default().fg(Color::Cyan)),
+                            Span::styled(")", Style::default().fg(Color::Cyan)),
                         ]))
                     })
                     .collect();
@@ -36,7 +36,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, _storage: &Storag
                     ])),
                     ListItem::new(Line::from(vec![
                         Span::styled("💡 ", Style::default().fg(Color::Cyan)),
-                        Span::styled("Press 'n' to create", Style::default().fg(Color::Gray)),
+                        Span::styled("Press 'n' to create", Style::default().fg(Color::Cyan)),
                     ])),
                 ];
                 (title, items)
@@ -52,9 +52,9 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, _storage: &Storag
                         ListItem::new(Line::from(vec![
                             Span::styled("📋 ", Style::default().fg(Color::Green)),
                             Span::raw(&task.id),
-                            Span::styled(" (", Style::default().fg(Color::Gray)),
-                            Span::styled(&task.symbol, Style::default().fg(Color::Gray)),
-                            Span::styled(")", Style::default().fg(Color::Gray)),
+                            Span::styled(" (", Style::default().fg(Color::Cyan)),
+                            Span::styled(&task.symbol, Style::default().fg(Color::Cyan)),
+                            Span::styled(")", Style::default().fg(Color::Cyan)),
                         ]))
                     })
                     .collect();
@@ -67,7 +67,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, _storage: &Storag
                     ])),
                     ListItem::new(Line::from(vec![
                         Span::styled("💡 ", Style::default().fg(Color::Cyan)),
-                        Span::styled("Press 'n' to create", Style::default().fg(Color::Gray)),
+                        Span::styled("Press 'n' to create", Style::default().fg(Color::Cyan)),
                     ])),
                 ];
                 (title, items)
@@ -85,7 +85,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, _storage: &Storag
         .highlight_style(
             Style::default()
                 .bg(Color::Blue)
-                .fg(Color::White)
+                .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▶ ");

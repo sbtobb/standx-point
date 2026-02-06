@@ -7,69 +7,133 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
+use std::fmt;
 
 use crate::state::storage::Account;
+use standx_point_adapter::Chain;
+
+use super::help_text;
+use super::single_select::SingleSelect;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountChain {
+    Bsc,
+    Solana,
+}
+
+impl fmt::Display for AccountChain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AccountChain::Bsc => write!(f, "bsc"),
+            AccountChain::Solana => write!(f, "solana"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountField {
+    Chain,
+    PrivateKey,
+    Name,
+}
+
+impl AccountField {
+    pub fn next(self) -> Self {
+        match self {
+            AccountField::Chain => AccountField::PrivateKey,
+            AccountField::PrivateKey => AccountField::Name,
+            AccountField::Name => AccountField::Chain,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            AccountField::Chain => AccountField::Name,
+            AccountField::PrivateKey => AccountField::Chain,
+            AccountField::Name => AccountField::PrivateKey,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountSeed {
+    pub name: String,
+    pub chain: AccountChain,
+    pub private_key: String,
+}
 
 /// Account form data for creating/editing accounts
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct AccountForm {
-    pub id: String,
+    pub account_id: Option<String>,
     pub name: String,
-    pub jwt_token: String,
-    pub signing_key: String,
+    pub private_key: String,
+    pub chain: AccountChain,
     pub error_message: Option<String>,
-    pub focused_field: usize,        // 0=id, 1=name, 2=jwt, 3=signing_key
-    pub replace_on_next_input: bool, // Whether next character input replaces entire field (select-all semantics)
+    pub focused_field: AccountField,
+    pub chain_select: SingleSelect<AccountChain>,
 }
 
 impl AccountForm {
     pub fn new() -> Self {
+        let chain_options = vec![AccountChain::Bsc, AccountChain::Solana];
+        let mut chain_select = SingleSelect::new("Chains", chain_options);
+        chain_select.set_selected_index(0);
         Self {
-            id: String::new(),
+            account_id: None,
             name: String::new(),
-            jwt_token: String::new(),
-            signing_key: String::new(),
+            private_key: String::new(),
+            chain: AccountChain::Bsc,
             error_message: None,
-            focused_field: 0,
-            replace_on_next_input: false,
+            focused_field: AccountField::Chain,
+            chain_select,
         }
     }
 
     pub fn from_account(account: &Account) -> Self {
+        let chain_options = vec![AccountChain::Bsc, AccountChain::Solana];
+        let mut chain_select = SingleSelect::new("Chains", chain_options);
+        let chain = match account.chain {
+            Some(Chain::Solana) => {
+                chain_select.set_selected_index(1);
+                AccountChain::Solana
+            }
+            _ => {
+                chain_select.set_selected_index(0);
+                AccountChain::Bsc
+            }
+        };
         Self {
-            id: account.id.clone(),
+            account_id: Some(account.id.clone()),
             name: account.name.clone(),
-            jwt_token: account.jwt_token.clone(),
-            signing_key: account.signing_key.clone(),
+            private_key: String::new(),
+            chain,
             error_message: None,
-            focused_field: 0,
-            replace_on_next_input: false,
+            focused_field: AccountField::Name,
+            chain_select,
         }
     }
 
-    pub fn to_account(&self) -> Result<Account, String> {
-        if self.id.is_empty() {
-            return Err("Account ID is required".to_string());
-        }
-        if self.name.is_empty() {
+    pub fn validate_name(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() {
             return Err("Account name is required".to_string());
         }
-        if self.jwt_token.is_empty() {
-            return Err("JWT token is required".to_string());
+        Ok(())
+    }
+
+    pub fn to_account_seed(&self) -> Result<AccountSeed, String> {
+        if self.name.trim().is_empty() {
+            return Err("Account name is required".to_string());
         }
-        if self.signing_key.is_empty() {
-            return Err("Signing key is required".to_string());
+        if self.private_key.trim().is_empty() {
+            return Err("Private key is required".to_string());
         }
 
-        let account = Account::new(
-            self.id.clone(),
-            self.name.clone(),
-            self.jwt_token.clone(),
-            self.signing_key.clone(),
-        );
-
-        account.validate().map_err(|e| e.to_string())?;
-        Ok(account)
+        Ok(AccountSeed {
+            name: self.name.trim().to_string(),
+            chain: self.chain,
+            private_key: self.private_key.trim().to_string(),
+        })
     }
 }
 
@@ -82,7 +146,12 @@ pub fn render(frame: &mut Frame, area: Rect, form: &AccountForm, is_edit: bool) 
     frame.render_widget(Clear, popup_area);
 
     let title = if is_edit {
-        format!(" Edit Account: {} ", form.id)
+        let id = form
+            .account_id
+            .as_ref()
+            .map(|value| value.as_str())
+            .unwrap_or("unknown");
+        format!(" Edit Account: {} ", id)
     } else {
         " Create New Account ".to_string()
     };
@@ -93,21 +162,43 @@ pub fn render(frame: &mut Frame, area: Rect, form: &AccountForm, is_edit: bool) 
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
+    let inner_area = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(3)])
+        .split(inner_area);
+    let content_area = sections[0];
+    let help_area = sections[1];
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(content_area);
+    let fields_area = columns[0];
+    let select_area = columns[1];
+
     // Create the form content
     let mut content = vec![Line::from("")];
 
-    // ID field
-    let id_style = if form.focused_field == 0 {
+    if let Some(id) = form.account_id.as_ref() {
+        content.push(Line::from(vec![
+            Span::styled("ID:        ", Style::default().fg(Color::Cyan)),
+            Span::raw(id),
+        ]));
+        content.push(Line::from(""));
+    }
+
+    let chain_style = if form.focused_field == AccountField::Chain {
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Gray)
+        Style::default().fg(Color::Cyan)
     };
     content.push(Line::from(vec![
-        Span::styled("ID:        ", id_style),
-        Span::raw(&form.id),
-        if form.focused_field == 0 {
+        Span::styled("Chain:     ", chain_style),
+        Span::raw(form.chain.to_string()),
+        if form.focused_field == AccountField::Chain {
             Span::styled(" █", Style::default().fg(Color::Yellow))
         } else {
             Span::raw("")
@@ -115,66 +206,37 @@ pub fn render(frame: &mut Frame, area: Rect, form: &AccountForm, is_edit: bool) 
     ]));
     content.push(Line::from(""));
 
-    // Name field
-    let name_style = if form.focused_field == 1 {
+    if !is_edit {
+        let key_style = if form.focused_field == AccountField::PrivateKey {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Cyan)
+        };
+        content.push(Line::from(vec![
+            Span::styled("Private Key: ", key_style),
+            Span::raw(&form.private_key),
+            if form.focused_field == AccountField::PrivateKey {
+                Span::styled(" █", Style::default().fg(Color::Yellow))
+            } else {
+                Span::raw("")
+            },
+        ]));
+        content.push(Line::from(""));
+    }
+
+    let name_style = if form.focused_field == AccountField::Name {
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Gray)
+        Style::default().fg(Color::Cyan)
     };
     content.push(Line::from(vec![
-        Span::styled("Name:      ", name_style),
+        Span::styled("Name:        ", name_style),
         Span::raw(&form.name),
-        if form.focused_field == 1 {
-            Span::styled(" █", Style::default().fg(Color::Yellow))
-        } else {
-            Span::raw("")
-        },
-    ]));
-    content.push(Line::from(""));
-
-    // JWT Token field (masked for security)
-    let jwt_style = if form.focused_field == 2 {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
-    let jwt_display = if form.jwt_token.is_empty() {
-        String::new()
-    } else {
-        format!("{}...", &form.jwt_token[..form.jwt_token.len().min(20)])
-    };
-    content.push(Line::from(vec![
-        Span::styled("JWT Token: ", jwt_style),
-        Span::raw(&jwt_display),
-        if form.focused_field == 2 {
-            Span::styled(" █", Style::default().fg(Color::Yellow))
-        } else {
-            Span::raw("")
-        },
-    ]));
-    content.push(Line::from(""));
-
-    // Signing Key field (masked for security)
-    let key_style = if form.focused_field == 3 {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
-    let key_display = if form.signing_key.is_empty() {
-        String::new()
-    } else {
-        format!("{}...", &form.signing_key[..form.signing_key.len().min(20)])
-    };
-    content.push(Line::from(vec![
-        Span::styled("Sign Key:  ", key_style),
-        Span::raw(&key_display),
-        if form.focused_field == 3 {
+        if form.focused_field == AccountField::Name {
             Span::styled(" █", Style::default().fg(Color::Yellow))
         } else {
             Span::raw("")
@@ -196,20 +258,32 @@ pub fn render(frame: &mut Frame, area: Rect, form: &AccountForm, is_edit: bool) 
 
     // Instructions
     content.push(Line::from(vec![
-        Span::styled("Tab/↑↓ ", Style::default().fg(Color::Cyan)),
-        Span::styled("switch fields  ", Style::default().fg(Color::Gray)),
+        Span::styled("Tab ", Style::default().fg(Color::Cyan)),
+        Span::styled("switch fields  ", Style::default().fg(Color::Cyan)),
+        Span::styled("↑↓/j/k ", Style::default().fg(Color::Cyan)),
+        Span::styled("select option  ", Style::default().fg(Color::Cyan)),
         Span::styled("Enter ", Style::default().fg(Color::Cyan)),
-        Span::styled("save  ", Style::default().fg(Color::Gray)),
+        Span::styled("select/save  ", Style::default().fg(Color::Cyan)),
         Span::styled("Esc ", Style::default().fg(Color::Cyan)),
-        Span::styled("cancel", Style::default().fg(Color::Gray)),
+        Span::styled("cancel", Style::default().fg(Color::Cyan)),
     ]));
 
     let paragraph = Paragraph::new(content)
-        .block(block)
         .alignment(Alignment::Left)
         .wrap(Wrap { trim: true });
 
-    frame.render_widget(paragraph, popup_area);
+    frame.render_widget(paragraph, fields_area);
+
+    if form.focused_field == AccountField::Chain {
+        form.chain_select.render(frame, select_area);
+    }
+
+    let help_text = match form.focused_field {
+        AccountField::Chain => "选择链类型：bsc/solana",
+        AccountField::PrivateKey => "输入钱包私钥（不使用缩写）",
+        AccountField::Name => "输入账户名称，用于显示",
+    };
+    help_text::render(frame, help_area, help_text);
 }
 
 /// Create a centered rect for popups
@@ -240,73 +314,20 @@ mod tests {
     #[test]
     fn test_account_form_new() {
         let form = AccountForm::new();
-        assert!(form.id.is_empty());
+        assert!(form.account_id.is_none());
         assert!(form.name.is_empty());
-        assert!(form.jwt_token.is_empty());
-        assert!(form.signing_key.is_empty());
+        assert!(form.private_key.is_empty());
+        assert_eq!(form.chain, AccountChain::Bsc);
         assert!(form.error_message.is_none());
-        assert_eq!(form.focused_field, 0);
-        assert!(!form.replace_on_next_input);
+        assert_eq!(form.focused_field, AccountField::Chain);
     }
 
     #[test]
-    fn test_account_form_validation_empty_id() {
-        let form = AccountForm {
-            id: "".to_string(),
-            name: "Test".to_string(),
-            jwt_token: "token".to_string(),
-            signing_key: "key".to_string(),
-            error_message: None,
-            focused_field: 0,
-            replace_on_next_input: false,
-        };
-
-        let result = form.to_account();
+    fn test_account_form_validation_empty_name() {
+        let mut form = AccountForm::new();
+        form.private_key = "key".to_string();
+        let result = form.to_account_seed();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("ID is required"));
-    }
-
-    #[test]
-    fn test_account_form_select_all_replace() {
-        let mut form = AccountForm::new();
-        form.name = "abc".to_string();
-        form.focused_field = 1;
-        form.replace_on_next_input = true;
-
-        // Test that next char replaces entire field
-        form.name.push('x');
-        assert_eq!(form.name, "abcx"); // Wait, no - in state.rs we have the logic to clear first
-
-        // Let's simulate the state.rs logic
-        let mut form = AccountForm::new();
-        form.name = "abc".to_string();
-        form.focused_field = 1;
-        form.replace_on_next_input = true;
-
-        if form.replace_on_next_input {
-            form.name.clear();
-            form.name.push('x');
-            form.replace_on_next_input = false;
-        }
-
-        assert_eq!(form.name, "x");
-        assert!(!form.replace_on_next_input);
-    }
-
-    #[test]
-    fn test_account_form_select_all_backspace() {
-        let mut form = AccountForm::new();
-        form.name = "abc".to_string();
-        form.focused_field = 1;
-        form.replace_on_next_input = true;
-
-        // Test that backspace clears entire field
-        if form.replace_on_next_input {
-            form.name.clear();
-            form.replace_on_next_input = false;
-        }
-
-        assert_eq!(form.name, "");
-        assert!(!form.replace_on_next_input);
+        assert!(result.unwrap_err().contains("Account name is required"));
     }
 }

@@ -78,18 +78,18 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, market_data: &Mar
             if display_price != rust_decimal::Decimal::ZERO {
                 title_spans.push(Span::styled(
                     format!("{}: {:.2}", symbol, display_price),
-                    Style::default().fg(Color::White),
+                    Style::default(),
                 ));
             } else {
                 title_spans.push(Span::styled(
                     format!("{}: --", symbol),
-                    Style::default().fg(Color::Gray),
+                    Style::default().add_modifier(Modifier::DIM),
                 ));
             }
         } else {
             title_spans.push(Span::styled(
                 format!("{}: --", symbol),
-                Style::default().fg(Color::Gray),
+                Style::default().add_modifier(Modifier::DIM),
             ));
         }
     }
@@ -100,13 +100,13 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState, market_data: &Mar
     if let Some((ref msg, _)) = state.keypress_flash {
         let flash_spans = vec![
             Span::styled("Key: ", Style::default().fg(Color::Yellow)),
-            Span::styled(msg.clone(), Style::default().fg(Color::White)),
+            Span::styled(msg.clone(), Style::default().fg(Color::Yellow)),
         ];
         lines.push(Line::from(flash_spans));
     } else if let Some(ref msg) = state.status_message {
         let status_spans = vec![
             Span::styled("Status: ", Style::default().fg(Color::Blue)),
-            Span::styled(msg.clone(), Style::default().fg(Color::White)),
+            Span::styled(msg.clone(), Style::default().fg(Color::Yellow)),
         ];
         lines.push(Line::from(status_spans));
     }

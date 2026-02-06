@@ -9,9 +9,9 @@ use crate::app::state::{AppState, Pane};
 /// Render the menu bar at the bottom of the screen
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let menu_items = vec![
-        ("F1", "Help"),
-        ("F2", "Accounts"),
-        ("F3", "Tasks"),
+        ("Ctrl+1", "Help"),
+        ("Ctrl+2", "Accounts"),
+        ("Ctrl+3", "Tasks"),
         ("n", "New"),
         ("e", "Edit"),
         ("d", "Delete"),
@@ -44,7 +44,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         // Description in normal color
         spans.push(Span::styled(
             format!(" {}", desc),
-            base_style.fg(Color::Gray),
+            base_style.fg(Color::Cyan),
         ));
     }
 

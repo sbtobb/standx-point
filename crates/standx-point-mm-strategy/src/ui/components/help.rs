@@ -60,19 +60,19 @@ pub fn render(frame: &mut Frame, area: Rect) {
         )]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  F1       ", Style::default().fg(Color::Cyan)),
+            Span::styled("  Ctrl+1   ", Style::default().fg(Color::Cyan)),
             Span::raw("Toggle this help"),
         ]),
         Line::from(vec![
-            Span::styled("  F2       ", Style::default().fg(Color::Cyan)),
+            Span::styled("  Ctrl+2   ", Style::default().fg(Color::Cyan)),
             Span::raw("Switch to Accounts"),
         ]),
         Line::from(vec![
-            Span::styled("  F3       ", Style::default().fg(Color::Cyan)),
+            Span::styled("  Ctrl+3   ", Style::default().fg(Color::Cyan)),
             Span::raw("Switch to Tasks"),
         ]),
         Line::from(vec![
-            Span::styled("  F4       ", Style::default().fg(Color::Cyan)),
+            Span::styled("  Ctrl+4   ", Style::default().fg(Color::Cyan)),
             Span::raw("Toggle credentials visibility"),
         ]),
         Line::from(""),
@@ -114,9 +114,9 @@ pub fn render(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Press F1 or Esc to close...",
+            "Press Ctrl+1 or Esc to close...",
             Style::default()
-                .fg(Color::Gray)
+                .fg(Color::Cyan)
                 .add_modifier(Modifier::ITALIC),
         )]),
     ];
