@@ -8,12 +8,26 @@
 /// **Update**: Implement task edit flow with storage updates.
 /// **Update**: Add task deletion confirmation and storage removal.
 /// **Update**: Track quit confirmations and exit requests.
+/// **Update**: Restrict account selection to single-select in task form.
+/// **Update**: Fix pending task account updates and account selection matching.
 use crate::state::storage::{Account, Storage, Task};
-use crate::ui::components::account_form::AccountForm;
-use crate::ui::components::task_form::TaskForm;
-use anyhow::Result;
+use standx_point_mm_strategy::task::TaskRuntimeStatus;
+use crate::ui::components::account_form::{
+    AccountChain, AccountField, AccountForm, AccountSeed,
+};
+use crate::ui::components::task_form::{AccountOption, TaskField, TaskForm};
+use anyhow::{Result, anyhow};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use standx_point_adapter::auth::{
+    AuthManager, EvmWalletSigner, SolanaWalletSigner, WalletSigner,
+};
+use standx_point_adapter::StandxClient;
+use standx_point_adapter::types::{Balance, Chain, Position};
 use std::sync::Arc;
+use std::collections::HashMap;
+use std::time::Instant;
 
 /// Application mode - determines how keyboard input is interpreted
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,7 +73,7 @@ pub enum ConfirmAction {
 }
 
 /// Modal types that can be displayed
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum ModalType {
     /// Help overlay
@@ -74,6 +88,12 @@ pub enum ModalType {
     AccountForm { form: AccountForm, is_edit: bool },
     /// Task form dialog
     TaskForm { form: TaskForm, is_edit: bool },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PendingTaskForm {
+    form: TaskForm,
+    is_edit: bool,
 }
 
 /// Main application state
@@ -95,6 +115,8 @@ pub struct AppState {
     pub show_help: bool,
     /// Current modal (if any)
     pub modal: Option<ModalType>,
+    /// Pending task form when creating an account mid-flow
+    pub pending_task_form: Option<PendingTaskForm>,
     /// Exit requested via UI (graceful shutdown path)
     pub exit_requested: bool,
     /// Reference to storage for data access
@@ -103,6 +125,10 @@ pub struct AppState {
     pub accounts: Vec<Account>,
     /// Cached tasks for synchronous access in render
     pub tasks: Vec<Task>,
+    /// Runtime task status snapshot from TaskManager
+    pub runtime_status: HashMap<String, TaskRuntimeStatus>,
+    /// Cached account detail data fetched from StandX
+    pub account_details: HashMap<String, AccountDetail>,
     /// Pending 'g' key prefix state (number of ticks remaining before timeout)
     pub pending_g_ticks: u8,
     /// Whether to show full credentials (jwt_token, signing_key) or mask them
@@ -115,6 +141,25 @@ pub struct AppState {
     pub replace_on_next_input: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct AccountDetail {
+    pub balance: Option<Balance>,
+    pub positions: Vec<Position>,
+    pub last_updated: Option<Instant>,
+    pub last_error: Option<String>,
+}
+
+impl AccountDetail {
+    pub fn empty() -> Self {
+        Self {
+            balance: None,
+            positions: Vec::new(),
+            last_updated: None,
+            last_error: None,
+        }
+    }
+}
+
 impl AppState {
     /// Create new application state
     pub async fn new(storage: Arc<Storage>) -> Result<Self> {
@@ -123,16 +168,19 @@ impl AppState {
         Ok(Self {
             mode: AppMode::Normal,
             focused_pane: Pane::Sidebar,
-            sidebar_mode: SidebarMode::Accounts,
+            sidebar_mode: SidebarMode::Tasks,
             selected_index: 0,
             status_message: Some("Press F1 for help".to_string()),
             keypress_flash: None,
             show_help: false,
             modal: None,
+            pending_task_form: None,
             exit_requested: false,
             storage,
             accounts,
             tasks,
+            runtime_status: HashMap::new(),
+            account_details: HashMap::new(),
             pending_g_ticks: 0,
             show_credentials: false, // Default to masking credentials
             spinner_ticks: 0,
@@ -255,8 +303,10 @@ impl AppState {
             }
             SidebarMode::Tasks => {
                 self.mode = AppMode::Insert;
+                let mut form = TaskForm::new();
+                self.update_task_form_accounts(&mut form);
                 self.modal = Some(ModalType::TaskForm {
-                    form: TaskForm::new(),
+                    form,
                     is_edit: false,
                 });
                 self.status_message = Some("Creating new task...".to_string());
@@ -271,7 +321,7 @@ impl AppState {
             SidebarMode::Accounts => {
                 if let Some(account) = self.accounts.get(self.selected_index) {
                     let mut form = AccountForm::from_account(account);
-                    form.focused_field = 1;
+                    form.focused_field = AccountField::Name;
                     self.mode = AppMode::Insert;
                     self.modal = Some(ModalType::AccountForm {
                         form,
@@ -285,7 +335,8 @@ impl AppState {
             SidebarMode::Tasks => {
                 if let Some(task) = self.tasks.get(self.selected_index) {
                     let mut form = TaskForm::from_task(task);
-                    form.focused_field = 1;
+                    form.focused_field = TaskField::Symbol;
+                    self.update_task_form_accounts(&mut form);
                     self.mode = AppMode::Insert;
                     self.modal = Some(ModalType::TaskForm {
                         form,
@@ -377,139 +428,194 @@ impl AppState {
 
     /// Handle form input (called when in Insert mode)
     pub async fn handle_form_input(&mut self, key: KeyEvent) -> Result<()> {
-        let mut pending_account: Option<Account> = None;
-        let mut pending_account_id: Option<String> = None;
-        let mut pending_is_edit = false;
+        let mut pending_account_seed: Option<AccountSeed> = None;
+        let mut pending_account_update: Option<(String, String, AccountChain)> = None;
         let mut pending_task: Option<Task> = None;
         let mut pending_task_id: Option<String> = None;
         let mut pending_task_account_id: Option<String> = None;
         let mut pending_task_is_edit = false;
+        let mut open_account_form_from_task = false;
+        let mut pending_task_form_for_account: Option<PendingTaskForm> = None;
 
         if let Some(ModalType::AccountForm { form, is_edit }) = self.modal.as_mut() {
             let is_edit = *is_edit;
-            if is_edit && form.focused_field == 0 {
-                form.focused_field = 1;
-            }
             match key.code {
-                KeyCode::Tab | KeyCode::Down => {
-                    form.focused_field = if is_edit {
-                        match form.focused_field {
-                            1 => 2,
-                            2 => 3,
-                            _ => 1,
-                        }
+                KeyCode::Tab => {
+                    if is_edit {
+                        form.focused_field = match form.focused_field {
+                            AccountField::Chain => AccountField::Name,
+                            _ => AccountField::Chain,
+                        };
                     } else {
-                        (form.focused_field + 1) % 4
-                    };
+                        form.focused_field = form.focused_field.next();
+                    }
                     form.error_message = None;
                     self.replace_on_next_input = false;
                 }
-                KeyCode::BackTab | KeyCode::Up => {
-                    form.focused_field = if is_edit {
-                        match form.focused_field {
-                            3 => 2,
-                            2 => 1,
-                            _ => 3,
-                        }
-                    } else if form.focused_field == 0 {
-                        3
+                KeyCode::BackTab => {
+                    if is_edit {
+                        form.focused_field = match form.focused_field {
+                            AccountField::Chain => AccountField::Name,
+                            _ => AccountField::Chain,
+                        };
                     } else {
-                        form.focused_field - 1
-                    };
+                        form.focused_field = form.focused_field.prev();
+                    }
+                    form.error_message = None;
+                    self.replace_on_next_input = false;
+                }
+                KeyCode::Down | KeyCode::Up => {
+                    if form.focused_field == AccountField::Chain {
+                        let selected = form.chain_select.handle_key(key);
+                        if let Some(value) = selected {
+                            form.chain = value;
+                        } else if let Some(option) = form
+                            .chain_select
+                            .options()
+                            .get(form.chain_select.cursor_index())
+                        {
+                            form.chain = *option;
+                        }
+                    } else if is_edit {
+                        form.focused_field = match form.focused_field {
+                            AccountField::Chain => AccountField::Name,
+                            _ => AccountField::Chain,
+                        };
+                    } else {
+                        if matches!(key.code, KeyCode::Down) {
+                            form.focused_field = form.focused_field.next();
+                        } else {
+                            form.focused_field = form.focused_field.prev();
+                        }
+                    }
                     form.error_message = None;
                     self.replace_on_next_input = false;
                 }
                 KeyCode::Backspace => {
-                    if !(is_edit && form.focused_field == 0) {
+                    if matches!(
+                        form.focused_field,
+                        AccountField::Name | AccountField::PrivateKey
+                    ) {
                         if self.replace_on_next_input {
                             match form.focused_field {
-                                0 => form.id.clear(),
-                                1 => form.name.clear(),
-                                2 => form.jwt_token.clear(),
-                                _ => form.signing_key.clear(),
+                                AccountField::Name => form.name.clear(),
+                                AccountField::PrivateKey => form.private_key.clear(),
+                                _ => {}
                             }
                             self.replace_on_next_input = false;
                         } else {
                             match form.focused_field {
-                                0 => {
-                                    form.id.pop();
-                                }
-                                1 => {
+                                AccountField::Name => {
                                     form.name.pop();
                                 }
-                                2 => {
-                                    form.jwt_token.pop();
+                                AccountField::PrivateKey => {
+                                    form.private_key.pop();
                                 }
-                                _ => {
-                                    form.signing_key.pop();
-                                }
+                                _ => {}
                             }
                         }
                     }
                     form.error_message = None;
                 }
-                KeyCode::Enter => match form.to_account() {
-                    Ok(account) => {
-                        pending_account_id = Some(account.id.clone());
-                        pending_account = Some(account);
-                        pending_is_edit = is_edit;
+                KeyCode::Enter => {
+                    if form.focused_field == AccountField::Chain {
+                        if let Some(value) = form.chain_select.handle_key(key) {
+                            form.chain = value;
+                        }
                         form.error_message = None;
+                    } else if is_edit {
+                        match form.validate_name() {
+                            Ok(()) => {
+                                if let Some(account_id) = form.account_id.clone() {
+                                    pending_account_update =
+                                        Some((account_id, form.name.clone(), form.chain));
+                                    form.error_message = None;
+                                } else {
+                                    form.error_message = Some("Account ID missing".to_string());
+                                }
+                            }
+                            Err(message) => {
+                                form.error_message = Some(message);
+                            }
+                        }
+                    } else {
+                        match form.to_account_seed() {
+                            Ok(seed) => {
+                                pending_account_seed = Some(seed);
+                                form.error_message = None;
+                            }
+                            Err(message) => {
+                                form.error_message = Some(message);
+                            }
+                        }
                     }
-                    Err(message) => {
-                        form.error_message = Some(message);
+                }
+                KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    match form.focused_field {
+                        AccountField::Name => form.name.clear(),
+                        AccountField::PrivateKey => form.private_key.clear(),
+                        _ => {}
                     }
-                },
+                    self.replace_on_next_input = false;
+                    form.error_message = None;
+                }
+                KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if matches!(
+                        form.focused_field,
+                        AccountField::Name | AccountField::PrivateKey
+                    ) {
+                        self.replace_on_next_input = true;
+                    }
+                    form.error_message = None;
+                }
+                KeyCode::Char('j') | KeyCode::Char('k') => {
+                    if form.focused_field == AccountField::Chain {
+                        let selected = form.chain_select.handle_key(key);
+                        if let Some(value) = selected {
+                            form.chain = value;
+                        } else if let Some(option) = form
+                            .chain_select
+                            .options()
+                            .get(form.chain_select.cursor_index())
+                        {
+                            form.chain = *option;
+                        }
+                    } else if is_edit {
+                        form.focused_field = match form.focused_field {
+                            AccountField::Chain => AccountField::Name,
+                            _ => AccountField::Chain,
+                        };
+                    }
+                    form.error_message = None;
+                }
                 KeyCode::Char(ch)
                     if !key.modifiers.contains(KeyModifiers::CONTROL)
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
-                    if !(is_edit && form.focused_field == 0) {
+                    if matches!(
+                        form.focused_field,
+                        AccountField::Name | AccountField::PrivateKey
+                    ) {
                         if self.replace_on_next_input {
                             match form.focused_field {
-                                0 => {
-                                    form.id.clear();
-                                    form.id.push(ch);
-                                }
-                                1 => {
+                                AccountField::Name => {
                                     form.name.clear();
                                     form.name.push(ch);
                                 }
-                                2 => {
-                                    form.jwt_token.clear();
-                                    form.jwt_token.push(ch);
+                                AccountField::PrivateKey => {
+                                    form.private_key.clear();
+                                    form.private_key.push(ch);
                                 }
-                                _ => {
-                                    form.signing_key.clear();
-                                    form.signing_key.push(ch);
-                                }
+                                _ => {}
                             }
                             self.replace_on_next_input = false;
                         } else {
                             match form.focused_field {
-                                0 => form.id.push(ch),
-                                1 => form.name.push(ch),
-                                2 => form.jwt_token.push(ch),
-                                _ => form.signing_key.push(ch),
+                                AccountField::Name => form.name.push(ch),
+                                AccountField::PrivateKey => form.private_key.push(ch),
+                                _ => {}
                             }
                         }
-                    }
-                    form.error_message = None;
-                }
-                KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if !(is_edit && form.focused_field == 0) {
-                        match form.focused_field {
-                            0 => form.id.clear(),
-                            1 => form.name.clear(),
-                            2 => form.jwt_token.clear(),
-                            _ => form.signing_key.clear(),
-                        }
-                        self.replace_on_next_input = false;
-                    }
-                    form.error_message = None;
-                }
-                KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if !(is_edit && form.focused_field == 0) {
-                        self.replace_on_next_input = true;
                     }
                     form.error_message = None;
                 }
@@ -519,99 +625,206 @@ impl AppState {
 
         if let Some(ModalType::TaskForm { form, is_edit }) = self.modal.as_mut() {
             let is_edit = *is_edit;
-            if is_edit && form.focused_field == 0 {
-                form.focused_field = 1;
-            }
             match key.code {
-                KeyCode::Tab | KeyCode::Down => {
-                    form.focused_field = if is_edit {
-                        match form.focused_field {
-                            1 => 2,
-                            2 => 3,
-                            3 => 4,
-                            4 => 5,
-                            5 => 6,
-                            6 => 7,
-                            _ => 1,
-                        }
-                    } else {
-                        (form.focused_field + 1) % 8
-                    };
+                KeyCode::Tab => {
+                    form.focused_field = form.focused_field.next();
                     form.error_message = None;
                 }
-                KeyCode::BackTab | KeyCode::Up => {
-                    form.focused_field = if is_edit {
-                        match form.focused_field {
-                            7 => 6,
-                            6 => 5,
-                            5 => 4,
-                            4 => 3,
-                            3 => 2,
-                            2 => 1,
-                            _ => 7,
+                KeyCode::BackTab => {
+                    form.focused_field = form.focused_field.prev();
+                    form.error_message = None;
+                }
+                KeyCode::Down | KeyCode::Up => {
+                    match form.focused_field {
+                        TaskField::Symbol => {
+                            let selected = form.symbol_select.handle_key(key);
+                            if let Some(value) = selected {
+                                form.symbol = value;
+                            } else if let Some(option) = form
+                                .symbol_select
+                                .options()
+                                .get(form.symbol_select.cursor_index())
+                            {
+                                form.symbol = option.clone();
+                            }
                         }
-                    } else if form.focused_field == 0 {
-                        7
-                    } else {
-                        form.focused_field - 1
-                    };
+                        TaskField::RiskLevel => {
+                            let selected = form.risk_level_select.handle_key(key);
+                            if let Some(value) = selected {
+                                form.risk_level = value;
+                            } else if let Some(option) = form
+                                .risk_level_select
+                                .options()
+                                .get(form.risk_level_select.cursor_index())
+                            {
+                                form.risk_level = option.clone();
+                            }
+                        }
+                        TaskField::AccountId => {
+                            let selected = form.account_select.handle_key(key);
+                            if let Some(value) = selected {
+                                match value {
+                                    AccountOption::Existing { id, .. } => {
+                                        form.account_id = id;
+                                    }
+                                    AccountOption::CreateNew => {
+                                        form.account_id.clear();
+                                    }
+                                }
+                            } else if let Some(option) = form
+                                .account_select
+                                .options()
+                                .get(form.account_select.cursor_index())
+                            {
+                                match option {
+                                    AccountOption::Existing { id, .. } => {
+                                        form.account_id = id.clone();
+                                    }
+                                    AccountOption::CreateNew => {
+                                        form.account_id.clear();
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            if matches!(key.code, KeyCode::Down) {
+                                form.focused_field = form.focused_field.next();
+                            } else {
+                                form.focused_field = form.focused_field.prev();
+                            }
+                        }
+                    }
                     form.error_message = None;
                 }
                 KeyCode::Backspace => {
-                    if !(is_edit && form.focused_field == 0) {
-                        match form.focused_field {
-                            0 => {
-                                form.id.pop();
-                            }
-                            1 => {
-                                form.symbol.pop();
-                            }
-                            2 => {
-                                form.account_id.pop();
-                            }
-                            3 => {
-                                form.risk_level.pop();
-                            }
-                            4 => {
-                                form.max_position_usd.pop();
-                            }
-                            5 => {
-                                form.price_jump_threshold_bps.pop();
-                            }
-                            6 => {
-                                form.base_qty.pop();
-                            }
-                            _ => {
-                                form.tiers.pop();
-                            }
+                    match form.focused_field {
+                        TaskField::MaxPositionUsd => {
+                            form.max_position_usd.pop();
                         }
+                        TaskField::PriceJumpThresholdBps => {
+                            form.price_jump_threshold_bps.pop();
+                        }
+                        _ => {}
                     }
                     form.error_message = None;
                 }
-                KeyCode::Enter => match form.to_task() {
-                    Ok(task) => {
-                        pending_task_id = Some(task.id.clone());
-                        pending_task_account_id = Some(task.account_id.clone());
-                        pending_task = Some(task);
-                        pending_task_is_edit = is_edit;
-                        form.error_message = None;
+                KeyCode::Enter => match form.focused_field {
+                    TaskField::Symbol => {
+                        if let Some(value) = form.symbol_select.handle_key(key) {
+                            form.symbol = value;
+                        }
                     }
-                    Err(message) => {
-                        form.error_message = Some(message);
+                    TaskField::RiskLevel => {
+                        if let Some(value) = form.risk_level_select.handle_key(key) {
+                            form.risk_level = value;
+                        }
                     }
+                    TaskField::AccountId => {
+                        if let Some(value) = form.account_select.handle_key(key) {
+                            match value {
+                                AccountOption::Existing { id, .. } => {
+                                    form.account_id = id;
+                                }
+                                AccountOption::CreateNew => {
+                                    pending_task_form_for_account = Some(PendingTaskForm {
+                                        form: form.clone(),
+                                        is_edit,
+                                    });
+                                    open_account_form_from_task = true;
+                                }
+                            }
+                        }
+                    }
+                    _ => match form.to_task() {
+                        Ok(task) => {
+                            pending_task_id = Some(task.id.clone());
+                            pending_task_account_id = Some(task.account_id.clone());
+                            pending_task = Some(task);
+                            pending_task_is_edit = is_edit;
+                            form.error_message = None;
+                        }
+                        Err(message) => {
+                            form.error_message = Some(message);
+                        }
+                    },
                 },
                 KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if !(is_edit && form.focused_field == 0) {
-                        match form.focused_field {
-                            0 => form.id.clear(),
-                            1 => form.symbol.clear(),
-                            2 => form.account_id.clear(),
-                            3 => form.risk_level.clear(),
-                            4 => form.max_position_usd.clear(),
-                            5 => form.price_jump_threshold_bps.clear(),
-                            6 => form.base_qty.clear(),
-                            _ => form.tiers.clear(),
+                    match form.focused_field {
+                        TaskField::MaxPositionUsd => form.max_position_usd.clear(),
+                        TaskField::PriceJumpThresholdBps => form.price_jump_threshold_bps.clear(),
+                        _ => {}
+                    }
+                    form.error_message = None;
+                }
+                KeyCode::Char('j') | KeyCode::Char('k')
+                    if matches!(
+                        form.focused_field,
+                        TaskField::Symbol | TaskField::RiskLevel | TaskField::AccountId
+                    ) =>
+                {
+                    match form.focused_field {
+                        TaskField::Symbol => {
+                            let selected = form.symbol_select.handle_key(key);
+                            if let Some(value) = selected {
+                                form.symbol = value;
+                            } else if let Some(option) = form
+                                .symbol_select
+                                .options()
+                                .get(form.symbol_select.cursor_index())
+                            {
+                                form.symbol = option.clone();
+                            }
                         }
+                        TaskField::RiskLevel => {
+                            let selected = form.risk_level_select.handle_key(key);
+                            if let Some(value) = selected {
+                                form.risk_level = value;
+                            } else if let Some(option) = form
+                                .risk_level_select
+                                .options()
+                                .get(form.risk_level_select.cursor_index())
+                            {
+                                form.risk_level = option.clone();
+                            }
+                        }
+                        TaskField::AccountId => {
+                            let selected = form.account_select.handle_key(key);
+                            if let Some(value) = selected {
+                                match value {
+                                    AccountOption::Existing { id, .. } => {
+                                        form.account_id = id;
+                                    }
+                                    AccountOption::CreateNew => {
+                                        form.account_id.clear();
+                                    }
+                                }
+                            } else if let Some(option) = form
+                                .account_select
+                                .options()
+                                .get(form.account_select.cursor_index())
+                            {
+                                match option {
+                                    AccountOption::Existing { id, .. } => {
+                                        form.account_id = id.clone();
+                                    }
+                                    AccountOption::CreateNew => {
+                                        form.account_id.clear();
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    form.error_message = None;
+                }
+                KeyCode::Char(ch)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    match form.focused_field {
+                        TaskField::MaxPositionUsd => form.max_position_usd.push(ch),
+                        TaskField::PriceJumpThresholdBps => form.price_jump_threshold_bps.push(ch),
+                        _ => {}
                     }
                     form.error_message = None;
                 }
@@ -619,47 +832,44 @@ impl AppState {
             }
         }
 
-        if let Some(account) = pending_account {
-            if pending_is_edit {
-                let Account {
-                    id,
-                    name,
-                    jwt_token,
-                    signing_key,
-                    ..
-                } = account;
-                let account_id = pending_account_id.unwrap_or(id);
-                match self
-                    .storage
-                    .update_account(&account_id, |account| {
-                        account.name = name;
-                        account.jwt_token = jwt_token;
-                        account.signing_key = signing_key;
-                    })
-                    .await
-                {
-                    Ok(()) => match self.storage.list_accounts().await {
-                        Ok(accounts) => {
-                            self.accounts = accounts;
-                            self.status_message = Some(format!("Account updated: {}", account_id));
-                            self.close_account_form_modal();
-                        }
-                        Err(err) => {
-                            self.set_account_form_error(err.to_string());
-                        }
-                    },
+        if let Some((account_id, name, chain)) = pending_account_update {
+            let chain = match chain {
+                AccountChain::Bsc => Chain::Bsc,
+                AccountChain::Solana => Chain::Solana,
+            };
+            match self
+                .storage
+                .update_account(&account_id, |account| {
+                    account.name = name;
+                    account.chain = Some(chain);
+                })
+                .await
+            {
+                Ok(()) => match self.storage.list_accounts().await {
+                    Ok(accounts) => {
+                        self.accounts = accounts;
+                        self.status_message = Some(format!("Account updated: {}", account_id));
+                        self.close_account_form_modal();
+                    }
                     Err(err) => {
                         self.set_account_form_error(err.to_string());
                     }
+                },
+                Err(err) => {
+                    self.set_account_form_error(err.to_string());
                 }
-            } else {
-                match self.storage.create_account(account).await {
+            }
+        }
+
+        if let Some(seed) = pending_account_seed {
+            match self.build_account_from_seed(seed).await {
+                Ok(account) => match self.storage.create_account(account.clone()).await {
                     Ok(()) => match self.storage.list_accounts().await {
                         Ok(accounts) => {
                             self.accounts = accounts;
-                            let account_id =
-                                pending_account_id.unwrap_or_else(|| "account".to_string());
-                            self.status_message = Some(format!("Account created: {}", account_id));
+                            self.set_pending_task_account(account.id.clone());
+                            self.status_message =
+                                Some(format!("Account created: {}", account.id));
                             self.close_account_form_modal();
                         }
                         Err(err) => {
@@ -669,6 +879,9 @@ impl AppState {
                     Err(err) => {
                         self.set_account_form_error(err.to_string());
                     }
+                },
+                Err(err) => {
+                    self.set_account_form_error(err.to_string());
                 }
             }
         }
@@ -733,6 +946,16 @@ impl AppState {
                     }
                 }
             }
+        }
+
+        if open_account_form_from_task {
+            self.pending_task_form = pending_task_form_for_account;
+            self.modal = Some(ModalType::AccountForm {
+                form: AccountForm::new(),
+                is_edit: false,
+            });
+            self.mode = AppMode::Insert;
+            self.status_message = Some("Creating new account...".to_string());
         }
         Ok(())
     }
@@ -803,11 +1026,19 @@ impl AppState {
 
     pub fn close_account_form_modal(&mut self) {
         if let Some(ModalType::AccountForm { form, .. }) = self.modal.as_mut() {
-            form.jwt_token.clear();
-            form.signing_key.clear();
+            form.private_key.clear();
         }
-        self.modal = None;
-        self.mode = AppMode::Normal;
+        if let Some(mut pending) = self.pending_task_form.take() {
+            self.update_task_form_accounts(&mut pending.form);
+            self.modal = Some(ModalType::TaskForm {
+                form: pending.form,
+                is_edit: pending.is_edit,
+            });
+            self.mode = AppMode::Insert;
+        } else {
+            self.modal = None;
+            self.mode = AppMode::Normal;
+        }
         self.replace_on_next_input = false;
     }
 
@@ -827,6 +1058,96 @@ impl AppState {
         if let Some(ModalType::TaskForm { form, .. }) = self.modal.as_mut() {
             form.error_message = Some(message);
         }
+    }
+
+    fn update_task_form_accounts(&self, form: &mut TaskForm) {
+        let mut options: Vec<AccountOption> = self
+            .accounts
+            .iter()
+            .map(|account| AccountOption::Existing {
+                id: account.id.clone(),
+                name: account.name.clone(),
+            })
+            .collect();
+        options.push(AccountOption::CreateNew);
+        form.account_select.set_options(options);
+
+        if let Some(index) = form.account_select.options().iter().position(|option| {
+            matches!(
+                option,
+                AccountOption::Existing { id, .. } if id.as_str() == form.account_id.as_str()
+            )
+        }) {
+            form.account_select.set_selected_index(index);
+        } else if form.account_id.is_empty() {
+            if let Some((index, option)) = form
+                .account_select
+                .options()
+                .iter()
+                .enumerate()
+                .find(|(_, option)| matches!(option, AccountOption::Existing { .. }))
+            {
+                if let AccountOption::Existing { id, .. } = option {
+                    form.account_id = id.clone();
+                }
+                form.account_select.set_selected_index(index);
+            }
+        }
+    }
+
+    fn set_pending_task_account(&mut self, account_id: String) {
+        if let Some(mut pending) = self.pending_task_form.take() {
+            pending.form.account_id = account_id;
+            self.update_task_form_accounts(&mut pending.form);
+            self.pending_task_form = Some(pending);
+        }
+    }
+
+    async fn build_account_from_seed(&self, seed: AccountSeed) -> Result<Account> {
+        let client = StandxClient::new()
+            .map_err(|err| anyhow!("create StandxClient failed: {err}"))?;
+        let auth = AuthManager::new(client);
+        let (wallet_address, login_response) = match seed.chain {
+            AccountChain::Bsc => {
+                let wallet = EvmWalletSigner::new(&seed.private_key)
+                    .map_err(|err| anyhow!("invalid EVM private key: {err}"))?;
+                let address = wallet.address().to_string();
+                let login = auth
+                    .authenticate(&wallet, 7 * 24 * 60 * 60)
+                    .await
+                    .map_err(|err| anyhow!("authenticate failed: {err}"))?;
+                (address, login)
+            }
+            AccountChain::Solana => {
+                let wallet = SolanaWalletSigner::new(&seed.private_key)
+                    .map_err(|err| anyhow!("invalid Solana private key: {err}"))?;
+                let address = wallet.address().to_string();
+                let login = auth
+                    .authenticate(&wallet, 7 * 24 * 60 * 60)
+                    .await
+                    .map_err(|err| anyhow!("authenticate failed: {err}"))?;
+                (address, login)
+            }
+        };
+
+        let signer = auth
+            .key_manager()
+            .get_or_create_signer(&wallet_address)
+            .map_err(|err| anyhow!("load ed25519 signer failed: {err}"))?;
+        let signing_key = STANDARD.encode(signer.secret_key_bytes());
+
+        let chain = match seed.chain {
+            AccountChain::Bsc => Chain::Bsc,
+            AccountChain::Solana => Chain::Solana,
+        };
+
+        Ok(Account::new(
+            wallet_address,
+            seed.name,
+            login_response.token,
+            signing_key,
+            Some(chain),
+        ))
     }
 }
 
@@ -932,7 +1253,7 @@ mod tests {
         // Simulate typing "abc" into name field
         if let Some(ModalType::AccountForm { form, is_edit: _ }) = state.modal.as_mut() {
             form.name = "abc".to_string();
-            form.focused_field = 1;
+            form.focused_field = AccountField::Name;
         }
 
         // Press Ctrl+A to select all
@@ -980,7 +1301,7 @@ mod tests {
         // Simulate typing "abc" into name field
         if let Some(ModalType::AccountForm { form, is_edit: _ }) = state.modal.as_mut() {
             form.name = "abc".to_string();
-            form.focused_field = 1;
+            form.focused_field = AccountField::Name;
         }
 
         // Press Ctrl+A to select all
@@ -1020,26 +1341,27 @@ mod tests {
         let mut state = AppState::new(storage.clone()).await.unwrap();
 
         // Open account form in edit mode
+        let account = Account::new(
+            "acc-1".to_string(),
+            "Test Account".to_string(),
+            "jwt".to_string(),
+            "signing".to_string(),
+            None,
+        );
         state.modal = Some(ModalType::AccountForm {
-            form: AccountForm {
-                id: "test-id".to_string(),
-                name: "Test Account".to_string(),
-                jwt_token: "token".to_string(),
-                signing_key: "key".to_string(),
-                error_message: None,
-                focused_field: 0,
-                replace_on_next_input: false,
-            },
+            form: AccountForm::from_account(&account),
             is_edit: true,
         });
 
-        // We need to directly test the condition without triggering the auto-focus move
-        // Let's access the form directly before calling handle_form_input
-        let is_edit = true;
-        let focused_field = 0;
-
-        // The condition is: !(is_edit && focused_field == 0) should be false
-        assert!(is_edit && focused_field == 0);
+        // Press Ctrl+A to select all for the name field
+        let ctrl_a_event = KeyEvent {
+            code: KeyCode::Char('a'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: ratatui::crossterm::event::KeyEventKind::Press,
+            state: ratatui::crossterm::event::KeyEventState::NONE,
+        };
+        state.handle_form_input(ctrl_a_event).await.unwrap();
+        assert!(state.replace_on_next_input);
 
         cleanup_temp_dir(&temp_dir);
     }

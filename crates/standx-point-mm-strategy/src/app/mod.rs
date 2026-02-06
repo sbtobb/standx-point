@@ -8,7 +8,7 @@ pub mod event;
 pub mod state;
 
 use crate::app::event::AppEvent;
-use crate::app::state::{AppMode, AppState, ModalType, Pane, SidebarMode};
+use crate::app::state::{AccountDetail, AppMode, AppState, ModalType, Pane, SidebarMode};
 use crate::state::storage::{Storage, TaskState};
 use anyhow::Result;
 use ratatui::DefaultTerminal;
@@ -16,18 +16,20 @@ use ratatui::crossterm::event::{self as crossterm_event, Event, KeyCode, KeyEven
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use standx_point_mm_strategy::{config, market_data::MarketDataHub, task::TaskManager};
-use tokio::sync::{RwLock, mpsc};
+use standx_point_adapter::{Credentials, StandxClient};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, info};
 
 pub const TICK_RATE: u64 = 250;
+const ACCOUNT_DETAIL_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 pub struct App {
     pub state: Arc<RwLock<AppState>>,
     pub storage: Arc<Storage>,
     pub task_manager: TaskManager,
-    pub market_data: MarketDataHub,
+    pub market_data: Arc<Mutex<MarketDataHub>>,
     pub event_tx: mpsc::Sender<AppEvent>,
     pub event_rx: mpsc::Receiver<AppEvent>,
     pub should_exit: bool,
@@ -40,8 +42,8 @@ impl App {
         let storage = Arc::new(Storage::new().await?);
         let state = Arc::new(RwLock::new(AppState::new(storage.clone()).await?));
         let (event_tx, event_rx) = mpsc::channel(100);
-        let task_manager = TaskManager::new();
-        let market_data = MarketDataHub::new();
+        let market_data = Arc::new(Mutex::new(MarketDataHub::new()));
+        let task_manager = TaskManager::with_market_data_hub(Arc::clone(&market_data));
 
         // Parse auto-exit configuration from environment variable
         let auto_exit_after_ticks = std::env::var("STANDX_TUI_TEST_EXIT_AFTER_TICKS")
@@ -139,7 +141,7 @@ impl App {
                 // Handle help overlay interaction
                 if state.show_help {
                     match key.code {
-                        KeyCode::F(1) | KeyCode::Esc => {
+                        KeyCode::Esc => {
                             state.close_help().await?;
                             info!(action = "close_help", sidebar_mode = ?state.sidebar_mode, focused_pane = ?state.focused_pane, "help overlay closed");
                         }
@@ -328,8 +330,12 @@ impl App {
                 }
             }
             AppEvent::Tick => {
-                let mut state = self.state.write().await;
-                state.update_tick().await?;
+                {
+                    let mut state = self.state.write().await;
+                    state.update_tick().await?;
+                }
+                self.refresh_account_detail().await?;
+                self.refresh_task_runtime_status().await?;
             }
             AppEvent::Resize(w, h) => {
                 debug!(width = w, height = h, "terminal resized");
@@ -435,26 +441,26 @@ impl App {
             Char('G') => {
                 state.jump_to_last_item().await?;
             }
-            F(1) => {
+            Char('1') if key.modifiers.contains(crossterm_event::KeyModifiers::CONTROL) => {
                 state.show_help().await?;
                 info!(action = "show_help", sidebar_mode = ?state.sidebar_mode, focused_pane = ?state.focused_pane, "help overlay opened");
                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
             }
-            F(2) => {
+            Char('2') if key.modifiers.contains(crossterm_event::KeyModifiers::CONTROL) => {
                 state
                     .switch_sidebar_mode(crate::app::state::SidebarMode::Accounts)
                     .await?;
                 info!(action = "switch_sidebar_mode", sidebar_mode = ?SidebarMode::Accounts, focused_pane = ?state.focused_pane, "sidebar mode switched to accounts");
                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
             }
-            F(3) => {
+            Char('3') if key.modifiers.contains(crossterm_event::KeyModifiers::CONTROL) => {
                 state
                     .switch_sidebar_mode(crate::app::state::SidebarMode::Tasks)
                     .await?;
                 info!(action = "switch_sidebar_mode", sidebar_mode = ?SidebarMode::Tasks, focused_pane = ?state.focused_pane, "sidebar mode switched to tasks");
                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
             }
-            F(4) => {
+            Char('4') if key.modifiers.contains(crossterm_event::KeyModifiers::CONTROL) => {
                 state.toggle_credentials().await?;
                 // Show flash message indicating current state
                 let msg = if state.show_credentials {
@@ -508,11 +514,83 @@ impl App {
     async fn draw(&self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         let state = self.state.read().await;
         let storage = self.storage.clone();
-        let market_data = &self.market_data;
+        let market_data = self.market_data.lock().await;
         terminal.draw(|frame| {
-            crate::ui::render(frame, &state, &storage, market_data);
+            crate::ui::render(frame, &state, &storage, &market_data);
         })?;
         Ok(())
+    }
+
+    async fn refresh_account_detail(&mut self) -> Result<()> {
+        let account = {
+            let state = self.state.read().await;
+            if state.sidebar_mode != SidebarMode::Accounts || state.focused_pane != Pane::Detail {
+                return Ok(());
+            }
+
+            let Some(account) = state.accounts.get(state.selected_index).cloned() else {
+                return Ok(());
+            };
+
+            let refresh_due = match state
+                .account_details
+                .get(&account.id)
+                .and_then(|detail| detail.last_updated)
+            {
+                Some(last) => last.elapsed() >= ACCOUNT_DETAIL_REFRESH_INTERVAL,
+                None => true,
+            };
+
+            if !refresh_due {
+                return Ok(());
+            }
+
+            account
+        };
+
+        let detail_result = self.fetch_account_detail(&account).await;
+        let mut state = self.state.write().await;
+        let entry = state
+            .account_details
+            .entry(account.id.clone())
+            .or_insert_with(AccountDetail::empty);
+
+        match detail_result {
+            Ok(detail) => {
+                *entry = detail;
+            }
+            Err(err) => {
+                entry.last_error = Some(err.to_string());
+                entry.last_updated = Some(Instant::now());
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn fetch_account_detail(&self, account: &crate::state::storage::Account) -> Result<AccountDetail> {
+        let chain = account
+            .chain
+            .ok_or_else(|| anyhow::anyhow!("account chain not set"))?;
+
+        let mut client = StandxClient::new()
+            .map_err(|err| anyhow::anyhow!("create StandxClient failed: {err}"))?;
+        let credentials = Credentials {
+            jwt_token: account.jwt_token.clone(),
+            wallet_address: account.id.clone(),
+            chain,
+        };
+        client.set_credentials(credentials);
+
+        let balance = client.query_balance().await?;
+        let positions = client.query_positions(None).await?;
+
+        Ok(AccountDetail {
+            balance: Some(balance),
+            positions,
+            last_updated: Some(Instant::now()),
+            last_error: None,
+        })
     }
 
     async fn refresh_tasks_and_clamp(&self) -> Result<()> {
@@ -524,6 +602,13 @@ impl App {
         } else if state.selected_index >= state.tasks.len() {
             state.selected_index = state.tasks.len() - 1;
         }
+        Ok(())
+    }
+
+    async fn refresh_task_runtime_status(&self) -> Result<()> {
+        let runtime_status = self.task_manager.runtime_status_snapshot();
+        let mut state = self.state.write().await;
+        state.runtime_status = runtime_status;
         Ok(())
     }
 }
@@ -549,19 +634,14 @@ mod tests {
         temp_dir.join(format!("standx-mm-test-{}-{}", pid, timestamp))
     }
 
-    /// Cleans up a temporary directory (ignores errors)
-    fn cleanup_temp_dir(path: &std::path::Path) {
-        let _ = std::fs::remove_dir_all(path);
-    }
-
     /// Creates a minimal test App instance
     async fn create_test_app() -> Result<App> {
         let temp_dir = create_unique_temp_dir();
         let storage = Arc::new(Storage::new_in_dir(&temp_dir).await.unwrap());
         let state = Arc::new(RwLock::new(AppState::new(storage.clone()).await?));
         let (event_tx, event_rx) = mpsc::channel(100);
-        let task_manager = TaskManager::new();
-        let market_data = MarketDataHub::new();
+        let market_data = Arc::new(Mutex::new(MarketDataHub::new()));
+        let task_manager = TaskManager::with_market_data_hub(Arc::clone(&market_data));
 
         Ok(App {
             state,
