@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use base64::{prelude::BASE64_STANDARD, Engine};
 use bs58;
 use serde::Serialize;
-use solana_sdk::signature::{Keypair, Signer};
-use solana_sdk::signer::keypair::keypair_from_seed;
+use solana_keypair::{keypair_from_seed, Keypair};
+use solana_signer::Signer;
 
 use crate::http::{Result, StandxError};
 use crate::types::Chain;

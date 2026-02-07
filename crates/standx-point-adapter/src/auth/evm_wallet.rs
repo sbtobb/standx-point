@@ -8,8 +8,8 @@
 
 use std::str::FromStr;
 
-use alloy::signers::local::PrivateKeySigner;
-use alloy::signers::Signer;
+use alloy_signer::Signer;
+use alloy_signer_local::PrivateKeySigner;
 use async_trait::async_trait;
 
 use crate::auth::WalletSigner;
