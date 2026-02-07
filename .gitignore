@@ -82,3 +82,7 @@ FileScopeMCP-tree.json
 mcp-debug.log
 .index
 /standx-point-gui.db*
+.standx-config
+/crates/standx-point-mm-strategy/.standx-config/
+/logs/
+/.alma-snapshots/

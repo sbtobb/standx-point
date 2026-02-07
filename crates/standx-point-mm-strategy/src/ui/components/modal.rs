@@ -1,3 +1,4 @@
+use ratatui::Frame;
 /// **Input**: ModalType variants and ratatui layout/style primitives.
 /// **Output**: Modal dialog rendering via ratatui widgets.
 /// **Position**: Modal rendering entrypoint in the TUI component layer.
@@ -8,7 +9,6 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
-use ratatui::Frame;
 
 use crate::app::state::ModalType;
 use crate::ui::components::account_form;

@@ -5,6 +5,7 @@
 [UPDATE]: When auth endpoints or flow steps change
 */
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use base64::{engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD}, Engine as _};
@@ -48,7 +49,7 @@ pub struct AuthManager {
 impl AuthManager {
     /// Create a new auth manager using the default key directory.
     ///
-    /// Default: `./.standx-keys` relative to current working directory.
+    /// Default: `./.standx-config/keys` relative to current working directory.
     pub fn new(client: StandxClient) -> Self {
         Self::new_with_key_dir(client, default_key_dir())
     }
@@ -192,9 +193,40 @@ impl AuthManager {
 }
 
 fn default_key_dir() -> PathBuf {
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".standx-keys")
+    let base_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let config_dir = base_dir.join(".standx-config");
+    let new_dir = config_dir.join("keys");
+    migrate_legacy_key_dir(&base_dir, &new_dir);
+    new_dir
+}
+
+fn migrate_legacy_key_dir(base_dir: &Path, new_dir: &Path) {
+    if new_dir.exists() {
+        return;
+    }
+
+    let legacy_dir = base_dir.join(".standx-keys");
+    if !legacy_dir.exists() {
+        return;
+    }
+
+    if fs::create_dir_all(new_dir).is_err() {
+        return;
+    }
+
+    if fs::rename(&legacy_dir, new_dir).is_ok() {
+        return;
+    }
+
+    if let Ok(entries) = fs::read_dir(&legacy_dir) {
+        for entry in entries.flatten() {
+            let from_path = entry.path();
+            if let Some(name) = from_path.file_name() {
+                let to_path = new_dir.join(name);
+                let _ = fs::copy(&from_path, &to_path);
+            }
+        }
+    }
 }
 
 fn chain_query_value(chain: Chain) -> &'static str {

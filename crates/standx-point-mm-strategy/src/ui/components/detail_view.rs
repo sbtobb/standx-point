@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
 use rust_decimal::Decimal;
 
 use crate::app::state::{AccountDetail, AppState, Pane, SidebarMode};
@@ -379,29 +379,8 @@ fn render_task_details(task: &Task, runtime_status: Option<TaskRuntimeStatus>) -
             Span::styled(&task.risk_level, Style::default().fg(Color::Yellow)),
         ]),
         Line::from(vec![
-            Span::styled("   Max Position (USD): ", Style::default().fg(Color::Cyan)),
-            Span::styled(&task.max_position_usd, Style::default().fg(Color::Yellow)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "   Price Jump Threshold (bps): ",
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(
-                format!("{}", task.price_jump_threshold_bps),
-                Style::default().fg(Color::Yellow),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("   Base Qty: ", Style::default().fg(Color::Cyan)),
-            Span::styled(&task.base_qty, Style::default().fg(Color::Yellow)),
-        ]),
-        Line::from(vec![
-            Span::styled("   Tiers: ", Style::default().fg(Color::Cyan)),
-            Span::styled(
-                format!("{}", task.tiers),
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("   Budget (USD): ", Style::default().fg(Color::Cyan)),
+            Span::styled(&task.budget_usd, Style::default().fg(Color::Yellow)),
         ]),
         Line::from(vec![
             Span::styled("   State: ", Style::default().fg(Color::Cyan)),

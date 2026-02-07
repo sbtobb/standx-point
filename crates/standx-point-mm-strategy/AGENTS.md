@@ -13,3 +13,10 @@
 ## Conventions (Optional)
 - 生命周期逻辑与策略下单逻辑分离：`task.rs` 负责启动/退出/清理，不负责做市报价细节。
 - 异步运行时使用 Tokio；错误上抛使用 `anyhow::Result`。
+
+## Sizing Notes
+- `risk.budget_usd` 表示**双边挂单名义金额总和**，不是单边。
+- 每边预算：`per_side_budget = budget_usd / 2`。
+- 基础数量：`base_qty = per_side_budget / mark_price / total_weight`。
+- 分层数量：`tier_qty = base_qty * tier_weight * band_multiplier`（带 fill/backoff 乘子）。
+- 最终下单量会按交易所 `qty_tick_decimals` 对齐，且小于 `min_order_qty` 会被置零。

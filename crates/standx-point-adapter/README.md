@@ -20,8 +20,8 @@ The `PersistentKeyManager` automatically handles ed25519 session key storage:
 ```rust
 use standx_point_adapter::auth::AuthManager;
 
-// Keys stored in ./.standx-keys/{wallet_address}_ed25519.key
-let auth = AuthManager::new_with_key_dir(client, "./.standx-keys");
+// Keys stored in ./.standx-config/keys/{wallet_address}_ed25519.key
+let auth = AuthManager::new_with_key_dir(client, "./.standx-config/keys");
 
 // List stored accounts
 let accounts = auth.list_stored_accounts();
@@ -45,5 +45,5 @@ let response = auth.authenticate_with_wallet(
 ### Security Notes
 
 - Ed25519 keys are stored with 0o600 permissions
-- Never commit `.standx-keys/` to version control
-- Add `.standx-keys/` to your `.gitignore`
+- Never commit `.standx-config/keys/` to version control
+- Add `.standx-config/` to your `.gitignore`

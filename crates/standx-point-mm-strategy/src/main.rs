@@ -4,6 +4,7 @@
 [POS]:    Binary entry point
 [UPDATE]: When changing CLI flags, startup flow, or shutdown handling
 [UPDATE]: 2026-02-05 Configure tracing to log to daily files only
+[UPDATE]: 2026-02-06 Default to CLI and gate TUI with --tui
 */
 
 use anyhow::{Context, Result, anyhow};
@@ -13,14 +14,15 @@ use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::fs;
 use std::io::stdout;
-use std::path::PathBuf;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use tracing_appender::rolling;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::prelude::*;
 
 mod app;
 use crate::app::TICK_RATE;
@@ -28,6 +30,7 @@ mod cli;
 mod state;
 mod ui;
 
+use standx_point_adapter::http::StandxClient;
 use standx_point_mm_strategy::{MarketDataHub, StrategyConfig, TaskManager};
 
 #[derive(Parser, Debug)]
@@ -41,6 +44,8 @@ struct Cli {
     command: Option<Commands>,
     #[arg(short, long, value_name = "PATH")]
     config: Option<PathBuf>,
+    #[arg(long, conflicts_with = "config")]
+    tui: bool,
     #[arg(short, long, value_name = "LEVEL", default_value = "info")]
     log_level: String,
     #[arg(long)]
@@ -53,32 +58,76 @@ enum Commands {
         #[arg(short, long)]
         output: PathBuf,
     },
+    Migrate,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Cli::parse();
-    init_tracing(&args.log_level)?;
-
     if let Some(Commands::Init { output }) = args.command {
+        init_tracing(&args.log_level, RuntimeMode::Cli)?;
         return cli::init::run_init(output);
     }
 
-    match args.config {
-        Some(config_path) => run_cli_mode(config_path, args.dry_run).await,
-        None => run_tui_mode().await,
+    if let Some(Commands::Migrate) = args.command {
+        init_tracing(&args.log_level, RuntimeMode::Cli)?;
+        return run_migrations().await;
     }
+
+    let runtime_mode = if args.tui {
+        RuntimeMode::Tui
+    } else {
+        RuntimeMode::Cli
+    };
+    init_tracing(&args.log_level, runtime_mode)?;
+
+    if args.tui {
+        return run_tui_mode().await;
+    }
+
+    run_cli_mode(args.config, args.dry_run).await
 }
 
-async fn run_cli_mode(config_path: PathBuf, dry_run: bool) -> Result<()> {
-    info!(
-        config_path = %config_path.display(),
-        dry_run = dry_run,
-        "starting standx-mm-strategy (CLI mode)"
-    );
+async fn run_migrations() -> Result<()> {
+    let storage = state::storage::Storage::new().await?;
+    let client = StandxClient::new()
+        .map_err(|err| anyhow!("create StandxClient for migration failed: {err}"))?;
+    let auth = standx_point_adapter::auth::AuthManager::new(client);
 
-    let config = load_config(&config_path)?;
-    info!(task_count = config.tasks.len(), "configuration loaded");
+    let key_count = auth.list_stored_accounts().len();
+    let account_count = storage.list_accounts().await?.len();
+    let task_count = storage.list_tasks().await?.len();
+
+    info!(key_count, account_count, task_count, "migration complete");
+
+    Ok(())
+}
+
+async fn run_cli_mode(config_path: Option<PathBuf>, dry_run: bool) -> Result<()> {
+    if let Some(path) = &config_path {
+        info!(
+            config_path = %path.display(),
+            dry_run = dry_run,
+            "starting standx-mm-strategy (CLI mode)"
+        );
+    } else {
+        info!(dry_run = dry_run, "starting standx-mm-strategy (CLI mode)");
+    }
+
+    let config = match config_path {
+        Some(path) => {
+            let config = load_config(&path)?;
+            info!(task_count = config.tasks.len(), "configuration loaded");
+            config
+        }
+        None => match cli::interactive::run_interactive().await? {
+            Some(config) => config,
+            None => return Ok(()),
+        },
+    };
+
+    validate_strategy_config(&config)?;
+    log_strategy_config(&config);
 
     if dry_run {
         info!("dry-run requested; configuration validated");
@@ -128,7 +177,7 @@ async fn run_tui_mode() -> Result<()> {
                 _ = interval.tick() => {
                     app.handle_event(app::event::AppEvent::Tick).await?;
                     app.tick_count += 1;
-                    
+
                     if let Some(n) = app.auto_exit_after_ticks && app.tick_count >= n {
                             app.should_exit = true;
                         }
@@ -169,7 +218,13 @@ async fn run_tui_mode() -> Result<()> {
     result
 }
 
-fn init_tracing(log_level: &str) -> Result<()> {
+#[derive(Debug, Clone, Copy)]
+enum RuntimeMode {
+    Cli,
+    Tui,
+}
+
+fn init_tracing(log_level: &str, mode: RuntimeMode) -> Result<()> {
     let filter = EnvFilter::try_new(log_level).context("invalid log level")?;
     let log_dir = std::env::current_dir()
         .context("resolve current directory")?
@@ -177,19 +232,111 @@ fn init_tracing(log_level: &str) -> Result<()> {
     fs::create_dir_all(&log_dir)
         .with_context(|| format!("create log directory {}", log_dir.display()))?;
     let file_appender = rolling::daily(&log_dir, "standx-point-mm-strategy.log");
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(file_appender)
-        .with_ansi(false)
-        .try_init()
-        .map_err(|err| anyhow!(err))
-        .context("initialize tracing subscriber")?;
+    match mode {
+        RuntimeMode::Cli => {
+            let file_layer = tracing_subscriber::fmt::layer()
+                .with_writer(file_appender)
+                .with_ansi(false)
+                .with_filter(filter.clone());
+            let stdout_layer = tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stdout)
+                .with_ansi(true)
+                .with_filter(filter);
+            tracing_subscriber::registry()
+                .with(file_layer)
+                .with(stdout_layer)
+                .try_init()
+                .map_err(|err| anyhow!(err))
+                .context("initialize tracing subscriber")?;
+        }
+        RuntimeMode::Tui => {
+            let file_layer = tracing_subscriber::fmt::layer()
+                .with_writer(file_appender)
+                .with_ansi(false)
+                .with_filter(filter);
+            tracing_subscriber::registry()
+                .with(file_layer)
+                .try_init()
+                .map_err(|err| anyhow!(err))
+                .context("initialize tracing subscriber")?;
+        }
+    }
     Ok(())
 }
 
 fn load_config(path: &Path) -> Result<StrategyConfig> {
     let path_str = path.to_str().context("config path must be valid utf-8")?;
     StrategyConfig::from_file(path_str).context("load config")
+}
+
+fn validate_strategy_config(config: &StrategyConfig) -> Result<()> {
+    if config.accounts.is_empty() {
+        return Err(anyhow!("strategy config must contain at least one account"));
+    }
+    if config.tasks.is_empty() {
+        return Err(anyhow!("strategy config must contain at least one task"));
+    }
+
+    let mut seen_accounts = std::collections::HashSet::new();
+    let mut account_ids = std::collections::HashSet::new();
+    for account in &config.accounts {
+        if account.id.trim().is_empty() {
+            return Err(anyhow!("account id cannot be empty"));
+        }
+        if account.jwt_token.trim().is_empty() {
+            return Err(anyhow!("account jwt_token cannot be empty"));
+        }
+        if account.signing_key.trim().is_empty() {
+            return Err(anyhow!("account signing_key cannot be empty"));
+        }
+        if !seen_accounts.insert(account.id.clone()) {
+            return Err(anyhow!("duplicate account id in config: {}", account.id));
+        }
+        account_ids.insert(account.id.clone());
+    }
+
+    let mut seen_ids = std::collections::HashSet::new();
+    for task in &config.tasks {
+        if task.id.trim().is_empty() {
+            return Err(anyhow!("task id cannot be empty"));
+        }
+        if task.symbol.trim().is_empty() {
+            return Err(anyhow!("task symbol cannot be empty"));
+        }
+        if task.account_id.trim().is_empty() {
+            return Err(anyhow!("task account_id cannot be empty"));
+        }
+        if !account_ids.contains(&task.account_id) {
+            return Err(anyhow!("task account_id not found: {}", task.account_id));
+        }
+        if task.risk.level.trim().is_empty() {
+            return Err(anyhow!("task risk.level cannot be empty"));
+        }
+        if task.risk.budget_usd.trim().is_empty() {
+            return Err(anyhow!("task risk.budget_usd cannot be empty"));
+        }
+        if !seen_ids.insert(task.id.clone()) {
+            return Err(anyhow!("duplicate task id in config: {}", task.id));
+        }
+    }
+    Ok(())
+}
+
+fn log_strategy_config(config: &StrategyConfig) {
+    info!(
+        task_count = config.tasks.len(),
+        "strategy configuration confirmed"
+    );
+    for task in &config.tasks {
+        info!(
+            task_id = %task.id,
+            symbol = %task.symbol,
+            account_id = %task.account_id,
+            risk_level = %task.risk.level,
+            budget_usd = %task.risk.budget_usd,
+            "strategy task parameters"
+        );
+    }
 }
 
 fn setup_signal_handlers(shutdown: CancellationToken) {

@@ -11,14 +11,17 @@ use crate::app::event::AppEvent;
 use crate::app::state::{AccountDetail, AppMode, AppState, ModalType, Pane, SidebarMode};
 use crate::state::storage::{Storage, TaskState};
 use anyhow::Result;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self as crossterm_event, Event, KeyCode, KeyEvent};
+use standx_point_adapter::auth::{EvmWalletSigner, SolanaWalletSigner};
+use standx_point_adapter::{AuthManager, Chain, Credentials, StandxClient, WalletSigner};
+use standx_point_mm_strategy::{config, market_data::MarketDataHub, task::TaskManager};
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use standx_point_mm_strategy::{config, market_data::MarketDataHub, task::TaskManager};
-use standx_point_adapter::{Credentials, StandxClient};
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, info};
 
@@ -67,7 +70,7 @@ impl App {
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(TICK_RATE));
         let event_tx = self.event_tx.clone();
-        
+
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
 
@@ -101,7 +104,7 @@ impl App {
                 _ = interval.tick() => {
                     self.handle_event(AppEvent::Tick).await?;
                     self.tick_count += 1;
-                    
+
                     // Check if we need to auto-exit after N ticks
                     if let Some(n) = self.auto_exit_after_ticks && self.tick_count >= n {
                             self.should_exit = true;
@@ -126,16 +129,23 @@ impl App {
 
     pub async fn handle_event(&mut self, event: AppEvent) -> Result<()> {
         match event {
-             AppEvent::Key(key) => {
+            AppEvent::Key(key) => {
                 debug!(key = ?key, "key pressed");
-                
+
                 // Handle Ctrl+C force quit immediately (bypasses all other logic)
-                if key.code == KeyCode::Char('c') && key.modifiers.contains(crossterm_event::KeyModifiers::CONTROL) {
+                if key.code == KeyCode::Char('c')
+                    && key
+                        .modifiers
+                        .contains(crossterm_event::KeyModifiers::CONTROL)
+                {
                     self.should_exit = true;
-                    info!(action = "force_quit", "user requested force quit via Ctrl+C");
+                    info!(
+                        action = "force_quit",
+                        "user requested force quit via Ctrl+C"
+                    );
                     return Ok(());
                 }
-                
+
                 let mut state = self.state.write().await;
 
                 // Handle help overlay interaction
@@ -180,26 +190,42 @@ impl App {
 
                             let account = self.storage.get_account(&selected_task.account_id).await;
                             if let Some(account) = account {
+                                let account = match refresh_account_credentials(
+                                    &self.storage,
+                                    &account,
+                                )
+                                .await
+                                {
+                                    Ok(account) => account,
+                                    Err(err) => {
+                                        let mut state = self.state.write().await;
+                                        state.status_message = Some(format!(
+                                            "Failed to refresh account credentials: {}",
+                                            err
+                                        ));
+                                        state.stop_spinner().await?;
+                                        return Ok(());
+                                    }
+                                };
+                                let account_chain = account.chain.unwrap_or(Chain::Bsc);
                                 // Convert storage task and account to StrategyConfig
                                 let task_config = config::TaskConfig {
                                     id: selected_task.id.clone(),
                                     symbol: selected_task.symbol.clone(),
-                                    credentials: config::CredentialsConfig {
-                                        jwt_token: account.jwt_token.clone(),
-                                        signing_key: account.signing_key.clone(),
-                                    },
+                                    account_id: account.id.clone(),
                                     risk: config::RiskConfig {
                                         level: selected_task.risk_level.clone(),
-                                        max_position_usd: selected_task.max_position_usd.clone(),
-                                        price_jump_threshold_bps: selected_task.price_jump_threshold_bps,
-                                    },
-                                    sizing: config::SizingConfig {
-                                        base_qty: selected_task.base_qty.clone(),
-                                        tiers: selected_task.tiers,
+                                        budget_usd: selected_task.budget_usd.clone(),
                                     },
                                 };
 
                                 let strategy_config = config::StrategyConfig {
+                                    accounts: vec![config::AccountConfig {
+                                        id: account.id.clone(),
+                                        jwt_token: account.jwt_token.clone(),
+                                        signing_key: account.signing_key.clone(),
+                                        chain: account_chain,
+                                    }],
                                     tasks: vec![task_config],
                                 };
 
@@ -214,8 +240,10 @@ impl App {
                                             .await
                                         {
                                             let mut state = self.state.write().await;
-                                            state.status_message =
-                                                Some(format!("Failed to persist task state: {}", err));
+                                            state.status_message = Some(format!(
+                                                "Failed to persist task state: {}",
+                                                err
+                                            ));
                                             state.stop_spinner().await?;
                                             return Ok(());
                                         }
@@ -261,10 +289,13 @@ impl App {
                                 }
                             } else {
                                 let mut state = self.state.write().await;
-                                state.status_message = Some("Account not found for task".to_string());
+                                state.status_message =
+                                    Some("Account not found for task".to_string());
                                 state.stop_spinner().await?;
                             }
-                        } else if sidebar_mode == SidebarMode::Tasks && key.code == KeyCode::Char('x') {
+                        } else if sidebar_mode == SidebarMode::Tasks
+                            && key.code == KeyCode::Char('x')
+                        {
                             if selected_index >= tasks.len() {
                                 let mut state = self.state.write().await;
                                 state.status_message = Some("No task selected".to_string());
@@ -322,7 +353,8 @@ impl App {
                         } else {
                             // Handle other normal mode keys
                             let mut state = self.state.write().await;
-                            Self::handle_normal_mode(&mut state, key, &mut self.should_exit).await?;
+                            Self::handle_normal_mode(&mut state, key, &mut self.should_exit)
+                                .await?;
                         }
                     }
                     AppMode::Insert => Self::handle_insert_mode(&mut state, key).await?,
@@ -346,62 +378,62 @@ impl App {
         Ok(())
     }
 
-     async fn handle_normal_mode(
+    async fn handle_normal_mode(
         state: &mut AppState,
         key: KeyEvent,
         should_exit: &mut bool,
     ) -> Result<()> {
         use KeyCode::*;
 
-         match key.code {
-             Char('q') | Esc => {
-                 *should_exit = true;
-                 info!(action = "quit", sidebar_mode = ?state.sidebar_mode, focused_pane = ?state.focused_pane, "user requested quit");
-             }
-             Char('j') | Down => {
-                 state.next_item().await?;
-                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
-             }
-             Char('k') | Up => {
-                 state.previous_item().await?;
-                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
-             }
-             Char('h') | Left => {
-                 state.focus_pane(Pane::Sidebar).await?;
-                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
-             }
-             Char('l') | Right => {
-                 state.focus_pane(Pane::Detail).await?;
-                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
-             }
-             Char('v') | Enter => {
-                 // Check if there's a selectable item
-                 let has_selectable_item = match state.sidebar_mode {
-                     SidebarMode::Accounts => state.selected_index < state.accounts.len(),
-                     SidebarMode::Tasks => state.selected_index < state.tasks.len(),
-                 };
-                 
-                 if has_selectable_item {
-                     state.focus_pane(Pane::Detail).await?;
-                 } else {
-                     let message = match state.sidebar_mode {
-                         SidebarMode::Accounts => "No account selected",
-                         SidebarMode::Tasks => "No task selected",
-                     };
-                     state.status_message = Some(message.to_string());
-                 }
-                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
-             }
-             Tab => {
-                 // Cycle focus: Sidebar -> Detail -> Menu -> Sidebar
-                 let next_pane = match state.focused_pane {
-                     Pane::Sidebar => Pane::Detail,
-                     Pane::Detail => Pane::Menu,
-                     Pane::Menu => Pane::Sidebar,
-                 };
-                 state.focus_pane(next_pane).await?;
-                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
-             }
+        match key.code {
+            Char('q') | Esc => {
+                *should_exit = true;
+                info!(action = "quit", sidebar_mode = ?state.sidebar_mode, focused_pane = ?state.focused_pane, "user requested quit");
+            }
+            Char('j') | Down => {
+                state.next_item().await?;
+                state.pending_g_ticks = 0; // Clear pending 'g' prefix
+            }
+            Char('k') | Up => {
+                state.previous_item().await?;
+                state.pending_g_ticks = 0; // Clear pending 'g' prefix
+            }
+            Char('h') | Left => {
+                state.focus_pane(Pane::Sidebar).await?;
+                state.pending_g_ticks = 0; // Clear pending 'g' prefix
+            }
+            Char('l') | Right => {
+                state.focus_pane(Pane::Detail).await?;
+                state.pending_g_ticks = 0; // Clear pending 'g' prefix
+            }
+            Char('v') | Enter => {
+                // Check if there's a selectable item
+                let has_selectable_item = match state.sidebar_mode {
+                    SidebarMode::Accounts => state.selected_index < state.accounts.len(),
+                    SidebarMode::Tasks => state.selected_index < state.tasks.len(),
+                };
+
+                if has_selectable_item {
+                    state.focus_pane(Pane::Detail).await?;
+                } else {
+                    let message = match state.sidebar_mode {
+                        SidebarMode::Accounts => "No account selected",
+                        SidebarMode::Tasks => "No task selected",
+                    };
+                    state.status_message = Some(message.to_string());
+                }
+                state.pending_g_ticks = 0; // Clear pending 'g' prefix
+            }
+            Tab => {
+                // Cycle focus: Sidebar -> Detail -> Menu -> Sidebar
+                let next_pane = match state.focused_pane {
+                    Pane::Sidebar => Pane::Detail,
+                    Pane::Detail => Pane::Menu,
+                    Pane::Menu => Pane::Sidebar,
+                };
+                state.focus_pane(next_pane).await?;
+                state.pending_g_ticks = 0; // Clear pending 'g' prefix
+            }
             Char('n') => {
                 state.create_new_item().await?;
                 info!(action = "create_new_item", sidebar_mode = ?state.sidebar_mode, focused_pane = ?state.focused_pane, "create new item dialog opened");
@@ -441,26 +473,42 @@ impl App {
             Char('G') => {
                 state.jump_to_last_item().await?;
             }
-            Char('1') if key.modifiers.contains(crossterm_event::KeyModifiers::CONTROL) => {
+            Char('1')
+                if key
+                    .modifiers
+                    .contains(crossterm_event::KeyModifiers::CONTROL) =>
+            {
                 state.show_help().await?;
                 info!(action = "show_help", sidebar_mode = ?state.sidebar_mode, focused_pane = ?state.focused_pane, "help overlay opened");
                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
             }
-            Char('2') if key.modifiers.contains(crossterm_event::KeyModifiers::CONTROL) => {
+            Char('2')
+                if key
+                    .modifiers
+                    .contains(crossterm_event::KeyModifiers::CONTROL) =>
+            {
                 state
                     .switch_sidebar_mode(crate::app::state::SidebarMode::Accounts)
                     .await?;
                 info!(action = "switch_sidebar_mode", sidebar_mode = ?SidebarMode::Accounts, focused_pane = ?state.focused_pane, "sidebar mode switched to accounts");
                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
             }
-            Char('3') if key.modifiers.contains(crossterm_event::KeyModifiers::CONTROL) => {
+            Char('3')
+                if key
+                    .modifiers
+                    .contains(crossterm_event::KeyModifiers::CONTROL) =>
+            {
                 state
                     .switch_sidebar_mode(crate::app::state::SidebarMode::Tasks)
                     .await?;
                 info!(action = "switch_sidebar_mode", sidebar_mode = ?SidebarMode::Tasks, focused_pane = ?state.focused_pane, "sidebar mode switched to tasks");
                 state.pending_g_ticks = 0; // Clear pending 'g' prefix
             }
-            Char('4') if key.modifiers.contains(crossterm_event::KeyModifiers::CONTROL) => {
+            Char('4')
+                if key
+                    .modifiers
+                    .contains(crossterm_event::KeyModifiers::CONTROL) =>
+            {
                 state.toggle_credentials().await?;
                 // Show flash message indicating current state
                 let msg = if state.show_credentials {
@@ -568,7 +616,10 @@ impl App {
         Ok(())
     }
 
-    async fn fetch_account_detail(&self, account: &crate::state::storage::Account) -> Result<AccountDetail> {
+    async fn fetch_account_detail(
+        &self,
+        account: &crate::state::storage::Account,
+    ) -> Result<AccountDetail> {
         let chain = account
             .chain
             .ok_or_else(|| anyhow::anyhow!("account chain not set"))?;
@@ -611,6 +662,83 @@ impl App {
         state.runtime_status = runtime_status;
         Ok(())
     }
+}
+
+async fn refresh_account_credentials(
+    storage: &Storage,
+    account: &crate::state::storage::Account,
+) -> Result<crate::state::storage::Account> {
+    let chain = account
+        .chain
+        .ok_or_else(|| anyhow::anyhow!("account chain not set"))?;
+    if account.private_key.trim().is_empty() {
+        return Err(anyhow::anyhow!("account private key is missing"));
+    }
+
+    info!(
+        account_id = %account.id,
+        chain = ?chain,
+        "refreshing account credentials"
+    );
+
+    let client =
+        StandxClient::new().map_err(|err| anyhow::anyhow!("create StandxClient failed: {err}"))?;
+    let auth = AuthManager::new(client);
+    let (wallet_address, login_response): (String, _) = match chain {
+        Chain::Bsc => {
+            let wallet = EvmWalletSigner::new(&account.private_key)
+                .map_err(|err| anyhow::anyhow!("invalid EVM private key: {err}"))?;
+            let address = wallet.address().to_string();
+            let login = auth
+                .authenticate(&wallet, 7 * 24 * 60 * 60)
+                .await
+                .map_err(|err| anyhow::anyhow!("authenticate failed: {err}"))?;
+            (address, login)
+        }
+        Chain::Solana => {
+            let wallet = SolanaWalletSigner::new(&account.private_key)
+                .map_err(|err| anyhow::anyhow!("invalid Solana private key: {err}"))?;
+            let address = wallet.address().to_string();
+            let login = auth
+                .authenticate(&wallet, 7 * 24 * 60 * 60)
+                .await
+                .map_err(|err| anyhow::anyhow!("authenticate failed: {err}"))?;
+            (address, login)
+        }
+    };
+
+    if wallet_address != account.id {
+        return Err(anyhow::anyhow!(
+            "wallet address mismatch: stored={} derived={}",
+            account.id,
+            wallet_address
+        ));
+    }
+
+    let signer = auth
+        .key_manager()
+        .get_or_create_signer(&wallet_address)
+        .map_err(|err| anyhow::anyhow!("load ed25519 signer failed: {err}"))?;
+    let signing_key = STANDARD.encode(signer.secret_key_bytes());
+
+    storage
+        .update_account(&account.id, |stored| {
+            stored.jwt_token = login_response.token.clone();
+            stored.signing_key = signing_key.clone();
+        })
+        .await
+        .map_err(|err| anyhow::anyhow!("update account credentials failed: {err}"))?;
+
+    info!(
+        account_id = %account.id,
+        chain = ?chain,
+        "account credentials refreshed"
+    );
+
+    let mut refreshed = account.clone();
+    refreshed.jwt_token = login_response.token;
+    refreshed.signing_key = signing_key;
+    Ok(refreshed)
 }
 
 #[cfg(test)]
@@ -670,7 +798,7 @@ mod tests {
     async fn test_ctrl_c_force_quit_normal_mode() {
         // Create test app
         let mut app = create_test_app().await.unwrap();
-        
+
         // Verify initial state
         assert!(!app.should_exit);
 
@@ -685,7 +813,7 @@ mod tests {
     async fn test_ctrl_c_force_quit_help_mode() {
         // Create test app
         let mut app = create_test_app().await.unwrap();
-        
+
         // Open help overlay
         {
             let mut state = app.state.write().await;
@@ -707,7 +835,7 @@ mod tests {
     async fn test_ctrl_c_force_quit_dialog_mode() {
         // Create test app
         let mut app = create_test_app().await.unwrap();
-        
+
         // Enter dialog mode
         {
             let mut state = app.state.write().await;
@@ -729,7 +857,7 @@ mod tests {
     async fn test_ctrl_c_force_quit_insert_mode() {
         // Create test app
         let mut app = create_test_app().await.unwrap();
-        
+
         // Enter insert mode
         {
             let mut state = app.state.write().await;

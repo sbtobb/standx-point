@@ -7,6 +7,7 @@ fn tui_mode_starts_and_exits_cleanly() {
 
     // Spawn the process with test environment variables
     let output = Command::new(binary_path)
+        .arg("--tui")
         .env("STANDX_TUI_TEST_EXIT_AFTER_TICKS", "1")
         .env("RUST_LOG", "error") // Reduce log output for test
         .output()

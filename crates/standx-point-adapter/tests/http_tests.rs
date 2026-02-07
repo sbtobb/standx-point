@@ -228,6 +228,40 @@ async fn test_http_user_endpoints_send_bearer_jwt() {
 }
 
 #[tokio::test]
+async fn test_query_open_orders_defaults_missing_total() {
+    let server = setup_mock_server().await;
+    let base_url = server.uri();
+
+    let jwt = mock_jwt_token();
+
+    Mock::given(method("GET"))
+        .and(path("/api/query_open_orders"))
+        .and(query_param("symbol", "BTC-USD"))
+        .and(header("authorization", format!("Bearer {jwt}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "page_size": 1,
+            "result": [],
+        })))
+        .mount(&server)
+        .await;
+
+    let mut client = assert_ok!(StandxClient::with_config_and_base_urls(
+        ClientConfig::default(),
+        &base_url,
+        &base_url
+    ));
+    client.set_credentials(Credentials {
+        jwt_token: jwt.clone(),
+        wallet_address: "0x1234567890abcdef".to_string(),
+        chain: Chain::Bsc,
+    });
+
+    let open_orders = assert_ok!(client.query_open_orders(Some("BTC-USD")).await);
+    assert_eq!(open_orders.result.len(), 0);
+    assert_eq!(open_orders.total, 0);
+}
+
+#[tokio::test]
 async fn test_http_trading_endpoints_send_body_signature_headers() {
     let server = setup_mock_server().await;
     let base_url = server.uri();

@@ -1496,7 +1496,8 @@ dependencies = [
 [[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
-source = "git+https://github.com/servo/core-foundation-rs?tag=core-text-v21.0.0#b10f1efc48343fc5590127ec6d890ffbb8b5bd02"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cpufeatures"
@@ -1512,15 +1513,6 @@ name = "crossbeam-channel"
 version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
-name = "crossbeam-epoch"
-version = "0.9.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -3002,21 +2994,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "json-persistence-demo"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "moka",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "json5"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3300,23 +3277,6 @@ dependencies = [
  "log",
  "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "moka"
-version = "0.12.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4ac832c50ced444ef6be0767a008b02c106a909ba79d1d830501e94b96f6b7e"
-dependencies = [
- "crossbeam-channel",
- "crossbeam-epoch",
- "crossbeam-utils",
- "equivalent",
- "parking_lot",
- "portable-atomic",
- "smallvec",
- "tagptr",
- "uuid",
 ]
 
 [[package]]
@@ -6534,12 +6494,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tagptr"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
-
-[[package]]
 name = "tap"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6956,7 +6910,6 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
- "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
@@ -7946,23 +7899,3 @@ name = "zmij"
 version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ff05f8caa9038894637571ae6b9e29466c1f4f829d26c9b28f869a29cbe3445"
-
-[[patch.unused]]
-name = "core-foundation"
-version = "0.10.0"
-source = "git+https://github.com/servo/core-foundation-rs?tag=core-text-v21.0.0#b10f1efc48343fc5590127ec6d890ffbb8b5bd02"
-
-[[patch.unused]]
-name = "core-graphics"
-version = "0.24.0"
-source = "git+https://github.com/servo/core-foundation-rs?tag=core-text-v21.0.0#b10f1efc48343fc5590127ec6d890ffbb8b5bd02"
-
-[[patch.unused]]
-name = "core-graphics-types"
-version = "0.2.0"
-source = "git+https://github.com/servo/core-foundation-rs?tag=core-text-v21.0.0#b10f1efc48343fc5590127ec6d890ffbb8b5bd02"
-
-[[patch.unused]]
-name = "core-text"
-version = "21.0.0"
-source = "git+https://github.com/servo/core-foundation-rs?tag=core-text-v21.0.0#b10f1efc48343fc5590127ec6d890ffbb8b5bd02"

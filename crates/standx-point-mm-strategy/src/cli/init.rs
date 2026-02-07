@@ -7,12 +7,10 @@
 
 use anyhow::{Context, Result};
 use console::style;
-use dialoguer::{Input, Select, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Input, Select};
 use std::path::PathBuf;
 
-use standx_point_mm_strategy::config::{
-    CredentialsConfig, RiskConfig, SizingConfig, StrategyConfig, TaskConfig,
-};
+use standx_point_mm_strategy::config::{AccountConfig, RiskConfig, StrategyConfig, TaskConfig};
 
 pub fn run_init(output: PathBuf) -> Result<()> {
     println!(
@@ -36,7 +34,12 @@ pub fn run_init(output: PathBuf) -> Result<()> {
         .default("BTC-USD".to_string())
         .interact_text()?;
 
-    println!("\n{}", style("--- Credentials ---").bold());
+    println!("\n{}", style("--- Account ---").bold());
+    let account_id: String = Input::with_theme(&theme)
+        .with_prompt("Account ID")
+        .default("account-1".to_string())
+        .interact_text()?;
+
     let jwt_token: String = Input::with_theme(&theme)
         .with_prompt("JWT Token")
         .interact_text()?;
@@ -46,7 +49,7 @@ pub fn run_init(output: PathBuf) -> Result<()> {
         .interact_text()?;
 
     println!("\n{}", style("--- Risk Management ---").bold());
-    let risk_levels = vec!["conservative", "moderate", "aggressive"];
+    let risk_levels = vec!["low", "medium", "high", "xhigh"];
     let risk_selection = Select::with_theme(&theme)
         .with_prompt("Risk Level")
         .items(&risk_levels)
@@ -54,48 +57,26 @@ pub fn run_init(output: PathBuf) -> Result<()> {
         .interact()?;
     let risk_level = risk_levels[risk_selection].to_string();
 
-    let max_position_usd: String = Input::with_theme(&theme)
-        .with_prompt("Max Position (USD)")
+    let budget_usd: String = Input::with_theme(&theme)
+        .with_prompt("Budget (USD)")
         .default("50000".to_string())
         .interact_text()?;
 
-    let price_jump_threshold_bps: u32 = Input::with_theme(&theme)
-        .with_prompt("Price Jump Threshold (bps/sec)")
-        .default(5)
-        .interact_text()?;
-
-    println!("\n{}", style("--- Order Sizing ---").bold());
-    let base_qty: String = Input::with_theme(&theme)
-        .with_prompt("Base Order Quantity")
-        .default("0.1".to_string())
-        .interact_text()?;
-
-    let tiers: u8 = Input::with_theme(&theme)
-        .with_prompt("Number of Tiers (1-3)")
-        .default(2)
-        .validate_with(|input: &u8| -> Result<(), &str> {
-            if *input >= 1 && *input <= 3 {
-                Ok(())
-            } else {
-                Err("Tiers must be between 1 and 3")
-            }
-        })
-        .interact_text()?;
-
     let config = StrategyConfig {
+        accounts: vec![AccountConfig {
+            id: account_id.clone(),
+            jwt_token,
+            signing_key,
+            chain: standx_point_adapter::Chain::Bsc,
+        }],
         tasks: vec![TaskConfig {
             id,
             symbol,
-            credentials: CredentialsConfig {
-                jwt_token,
-                signing_key,
-            },
+            account_id,
             risk: RiskConfig {
                 level: risk_level,
-                max_position_usd,
-                price_jump_threshold_bps,
+                budget_usd,
             },
-            sizing: SizingConfig { base_qty, tiers },
         }],
     };
 

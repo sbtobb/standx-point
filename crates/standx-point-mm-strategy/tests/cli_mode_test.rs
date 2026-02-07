@@ -6,10 +6,7 @@ fn cli_mode_with_config_and_dry_run_works() {
     let binary_path = env!("CARGO_BIN_EXE_standx-point-mm-strategy");
 
     // Get the path to the test config file
-    let config_path = format!(
-        "{}/examples/single_task.yaml",
-        env!("CARGO_MANIFEST_DIR")
-    );
+    let config_path = format!("{}/examples/single_task.yaml", env!("CARGO_MANIFEST_DIR"));
 
     // Spawn the process with --config and --dry-run flags
     let output = Command::new(binary_path)
