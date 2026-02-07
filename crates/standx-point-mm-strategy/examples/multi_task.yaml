@@ -1,26 +1,23 @@
 # StandX mm-strategy multi task example
+accounts:
+  - id: "account-1"
+    jwt_token: "jwt-for-account-1"
+    signing_key: "key-for-account-1"
+    chain: "bsc"
+  - id: "account-2"
+    jwt_token: "jwt-for-account-2"
+    signing_key: "key-for-account-2"
+    chain: "bsc"
 tasks:
   - id: "btc-task"
     symbol: "BTC-USD"
-    credentials:
-      jwt_token: "jwt-for-account-1"
-      signing_key: "key-for-account-1"
+    account_id: "account-1"
     risk:
-      level: "conservative"
-      max_position_usd: "50000"
-      price_jump_threshold_bps: 5
-    sizing:
-      base_qty: "0.1"
-      tiers: 2
+      level: "low"
+      budget_usd: "50000"
   - id: "eth-task"
     symbol: "ETH-USD"
-    credentials:
-      jwt_token: "jwt-for-account-2"
-      signing_key: "key-for-account-2"
+    account_id: "account-2"
     risk:
-      level: "conservative"
-      max_position_usd: "30000"
-      price_jump_threshold_bps: 5
-    sizing:
-      base_qty: "1.0"
-      tiers: 2
+      level: "low"
+      budget_usd: "30000"
