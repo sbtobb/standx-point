@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { version = "1.43", features = ["full"] }
-tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 futures-util = "0.3"
@@ -14,7 +14,8 @@ ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 rand = "0.8"
 base64 = "0.22"
 bs58 = "0.5"
-solana-sdk = "2.0"
+solana-keypair = "3.0"
+solana-signer = "3.0"
 uuid = { version = "1.12", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2.0"
@@ -22,8 +23,9 @@ url = "2.5"
 tracing = "0.1"
 rust_decimal = { version = "1.36", features = ["serde", "serde-with-str"] }
 async-trait = "0.1"
-alloy = { version = "0.3", features = ["signers", "signer-local"] }
 hex = "0.4"
+alloy-signer = "1.6.1"
+alloy-signer-local = "1.6.1"
 
 [dev-dependencies]
 tokio-test = "0.4"
