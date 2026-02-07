@@ -1,13 +1,13 @@
 # StandX Market Making Strategy Bot
 
-A production-ready market making bot for StandX exchange with multi-account support, shared market data streams, and conservative risk management.
+面向生产的 StandX 做市机器人，支持多账户、共享行情流与谨慎风险管理。
 
 ## Features
 
 - **TUI Management**: Interactive terminal interface for managing accounts and tasks
 - **Multi-Account Support**: Run multiple trading tasks simultaneously with isolated state
 - **Shared Market Data**: Single WebSocket connection feeds all tasks via `tokio::sync::watch` channels
-- **Conservative Strategy**: 5-10 bps from mark price for safe market making
+- **Low 策略**: 5 层、5-30 bps 区间做市
 - **Risk Management**: Price jump protection, depth monitoring, position limits, fill rate tracking
 - **Automatic Reconnection**: Exponential backoff for WebSocket reconnection (max 30s)
 - **Graceful Shutdown**: SIGTERM handling with order cancellation and position closure
@@ -39,19 +39,18 @@ A production-ready market making bot for StandX exchange with multi-account supp
 Create a configuration file (see `examples/single_task.yaml`):
 
 ```yaml
+accounts:
+  - id: "account-1"
+    jwt_token: "your-jwt-token"
+    signing_key: "your-ed25519-key"
+    chain: "bsc"
 tasks:
   - id: "btc-mm"
     symbol: "BTC-USD"
-    credentials:
-      jwt_token: "your-jwt-token"
-      signing_key: "your-ed25519-key"
+    account_id: "account-1"
     risk:
-      level: "conservative"
-      max_position_usd: "50000"
-      price_jump_threshold_bps: 5
-    sizing:
-      base_qty: "0.1"
-      tiers: 2
+      level: "low"
+      budget_usd: "50000"
 ```
 
 ### 2. Run the Bot
@@ -131,19 +130,30 @@ RUST_LOG=info ./target/release/standx-point-mm-strategy --config config.yaml
 |-------|------|-------------|
 | `id` | String | Unique task identifier |
 | `symbol` | String | Trading pair (e.g., "BTC-USD") |
-| `credentials.jwt_token` | String | JWT authentication token |
-| `credentials.signing_key` | String | Ed25519 private key (base64) |
-| `risk.level` | String | "conservative", "moderate", or "aggressive" |
-| `risk.max_position_usd` | String | Maximum position size in USD |
-| `risk.price_jump_threshold_bps` | u32 | Price velocity threshold |
-| `sizing.base_qty` | String | Base order quantity |
-| `sizing.tiers` | u8 | Number of price tiers (1-3) |
+| `account_id` | String | Account identifier from `accounts` |
+| `risk.level` | String | "low", "medium", "high", or "xhigh" |
+| `risk.budget_usd` | String | Budget in USD used for quoting |
+
+### Account Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | String | Account identifier referenced by tasks |
+| `jwt_token` | String | JWT authentication token |
+| `signing_key` | String | Ed25519 private key (base64) |
+| `chain` | String | "bsc" or "solana" |
+
+### Derived Parameters
+
+- `tiers` 由 `risk.level` 派生（low=5, medium=3, high=2, xhigh=1）。
+- `base_qty` is derived from `risk.budget_usd` and current mark price using a risk-based utilization (10%/20%/30%).
 
 ### Risk Levels
 
-- **Conservative**: 5-10 bps from mark price, safest
-- **Moderate**: 3-8 bps from mark price, balanced
-- **Aggressive**: 0-5 bps from mark price, highest points
+- **Low**: 5 tiers, 5-30 bps band
+- **Medium**: 3 tiers, 5-15 bps band
+- **High**: 2 tiers, 5-10 bps band
+- **XHigh**: 1 tier, 5-8 bps band
 
 ## Strategy Details
 
@@ -151,7 +161,7 @@ RUST_LOG=info ./target/release/standx-point-mm-strategy --config config.yaml
 
 1. **Price Monitoring**: Watches mark price via WebSocket
 2. **Quote Placement**: Places bilateral PostOnly orders at configured bps offset
-3. **Tier Management**: Maintains L1 (0-5bps), L2 (5-10bps), L3 (10-20bps) ladders
+3. **Tier Management**: Maintains L1 (5-10bps), L2 (10-15bps), L3 (15-20bps) ladders
 4. **Price Drift**: Cancels and replaces orders when price moves >1 bps
 5. **Partial Fills**: Re-quotes remaining quantity
 6. **Full Fills**: Enters cooldown period to avoid immediate re-entry
@@ -223,7 +233,7 @@ crates/standx-point-mm-strategy/
 
 **Recommendations:**
 - Start with small position sizes
-- Use conservative risk settings
+- 使用 low 风险等级
 - Monitor logs closely
 - Have a kill switch ready
 
