@@ -7,7 +7,6 @@
 
 use std::time::Duration;
 
-
 /// Test: WebSocket reconnection with exponential backoff
 #[tokio::test]
 async fn test_websocket_reconnection_backoff() {
