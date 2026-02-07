@@ -11,22 +11,18 @@
 /// **Update**: Restrict account selection to single-select in task form.
 /// **Update**: Fix pending task account updates and account selection matching.
 use crate::state::storage::{Account, Storage, Task};
-use standx_point_mm_strategy::task::TaskRuntimeStatus;
-use crate::ui::components::account_form::{
-    AccountChain, AccountField, AccountForm, AccountSeed,
-};
+use crate::ui::components::account_form::{AccountChain, AccountField, AccountForm, AccountSeed};
 use crate::ui::components::task_form::{AccountOption, TaskField, TaskForm};
 use anyhow::{Result, anyhow};
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use standx_point_adapter::auth::{
-    AuthManager, EvmWalletSigner, SolanaWalletSigner, WalletSigner,
-};
 use standx_point_adapter::StandxClient;
+use standx_point_adapter::auth::{AuthManager, EvmWalletSigner, SolanaWalletSigner, WalletSigner};
 use standx_point_adapter::types::{Balance, Chain, Position};
-use std::sync::Arc;
+use standx_point_mm_strategy::task::TaskRuntimeStatus;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 /// Application mode - determines how keyboard input is interpreted
@@ -698,11 +694,8 @@ impl AppState {
                 }
                 KeyCode::Backspace => {
                     match form.focused_field {
-                        TaskField::MaxPositionUsd => {
-                            form.max_position_usd.pop();
-                        }
-                        TaskField::PriceJumpThresholdBps => {
-                            form.price_jump_threshold_bps.pop();
+                        TaskField::BudgetUsd => {
+                            form.budget_usd.pop();
                         }
                         _ => {}
                     }
@@ -750,8 +743,7 @@ impl AppState {
                 },
                 KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     match form.focused_field {
-                        TaskField::MaxPositionUsd => form.max_position_usd.clear(),
-                        TaskField::PriceJumpThresholdBps => form.price_jump_threshold_bps.clear(),
+                        TaskField::BudgetUsd => form.budget_usd.clear(),
                         _ => {}
                     }
                     form.error_message = None;
@@ -822,8 +814,7 @@ impl AppState {
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
                     match form.focused_field {
-                        TaskField::MaxPositionUsd => form.max_position_usd.push(ch),
-                        TaskField::PriceJumpThresholdBps => form.price_jump_threshold_bps.push(ch),
+                        TaskField::BudgetUsd => form.budget_usd.push(ch),
                         _ => {}
                     }
                     form.error_message = None;
@@ -868,8 +859,7 @@ impl AppState {
                         Ok(accounts) => {
                             self.accounts = accounts;
                             self.set_pending_task_account(account.id.clone());
-                            self.status_message =
-                                Some(format!("Account created: {}", account.id));
+                            self.status_message = Some(format!("Account created: {}", account.id));
                             self.close_account_form_modal();
                         }
                         Err(err) => {
@@ -896,10 +886,7 @@ impl AppState {
                     symbol,
                     account_id,
                     risk_level,
-                    max_position_usd,
-                    price_jump_threshold_bps,
-                    base_qty,
-                    tiers,
+                    budget_usd,
                     ..
                 } = task;
                 match self
@@ -908,10 +895,7 @@ impl AppState {
                         existing.symbol = symbol;
                         existing.account_id = account_id;
                         existing.risk_level = risk_level;
-                        existing.max_position_usd = max_position_usd;
-                        existing.price_jump_threshold_bps = price_jump_threshold_bps;
-                        existing.base_qty = base_qty;
-                        existing.tiers = tiers;
+                        existing.budget_usd = budget_usd;
                     })
                     .await
                 {
@@ -1104,8 +1088,8 @@ impl AppState {
     }
 
     async fn build_account_from_seed(&self, seed: AccountSeed) -> Result<Account> {
-        let client = StandxClient::new()
-            .map_err(|err| anyhow!("create StandxClient failed: {err}"))?;
+        let client =
+            StandxClient::new().map_err(|err| anyhow!("create StandxClient failed: {err}"))?;
         let auth = AuthManager::new(client);
         let (wallet_address, login_response) = match seed.chain {
             AccountChain::Bsc => {
@@ -1144,6 +1128,7 @@ impl AppState {
         Ok(Account::new(
             wallet_address,
             seed.name,
+            seed.private_key,
             login_response.token,
             signing_key,
             Some(chain),
@@ -1344,6 +1329,7 @@ mod tests {
         let account = Account::new(
             "acc-1".to_string(),
             "Test Account".to_string(),
+            "private-key".to_string(),
             "jwt".to_string(),
             "signing".to_string(),
             None,
