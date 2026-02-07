@@ -1,16 +1,18 @@
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
+use standx_point_adapter::Chain;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::sync::Mutex;
-use standx_point_adapter::Chain;
 
 /// Account data structure for persistence
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub private_key: String,
     pub jwt_token: String,
     pub signing_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -23,6 +25,7 @@ impl Account {
     pub fn new(
         id: String,
         name: String,
+        private_key: String,
         jwt_token: String,
         signing_key: String,
         chain: Option<Chain>,
@@ -31,6 +34,7 @@ impl Account {
         Self {
             id,
             name,
+            private_key,
             jwt_token,
             signing_key,
             chain,
@@ -42,6 +46,9 @@ impl Account {
     pub fn validate(&self) -> Result<()> {
         if self.name.is_empty() {
             return Err(anyhow!("Account name cannot be empty"));
+        }
+        if self.private_key.is_empty() {
+            return Err(anyhow!("Account private key cannot be empty"));
         }
         if self.jwt_token.is_empty() {
             return Err(anyhow!("JWT token cannot be empty"));
@@ -60,10 +67,8 @@ pub struct Task {
     pub symbol: String,
     pub account_id: String,
     pub risk_level: String,
-    pub max_position_usd: String,
-    pub price_jump_threshold_bps: u32,
-    pub base_qty: String,
-    pub tiers: u8,
+    #[serde(alias = "max_position_usd")]
+    pub budget_usd: String,
     pub state: TaskState,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -83,10 +88,7 @@ impl Task {
         symbol: String,
         account_id: String,
         risk_level: String,
-        max_position_usd: String,
-        price_jump_threshold_bps: u32,
-        base_qty: String,
-        tiers: u8,
+        budget_usd: String,
     ) -> Self {
         let now = chrono::Utc::now();
         Self {
@@ -94,10 +96,7 @@ impl Task {
             symbol,
             account_id,
             risk_level,
-            max_position_usd,
-            price_jump_threshold_bps,
-            base_qty,
-            tiers,
+            budget_usd,
             state: TaskState::Stopped,
             created_at: now,
             updated_at: now,
@@ -114,6 +113,9 @@ impl Task {
         if self.account_id.is_empty() {
             return Err(anyhow!("Account ID cannot be empty"));
         }
+        if self.budget_usd.is_empty() {
+            return Err(anyhow!("Budget USD cannot be empty"));
+        }
         Ok(())
     }
 }
@@ -129,11 +131,12 @@ pub struct Storage {
 
 impl Storage {
     pub async fn new() -> Result<Self> {
-        let data_dir = dirs::data_dir()
-            .ok_or_else(|| anyhow!("Could not determine data directory"))?
-            .join("standx-mm");
-
+        let data_dir = Self::default_data_dir()?;
         fs::create_dir_all(&data_dir).await?;
+
+        if let Some(legacy_dir) = Self::legacy_data_dir() {
+            Self::migrate_legacy_files(&data_dir, &legacy_dir).await?;
+        }
 
         let accounts_path = data_dir.join("accounts.json");
         let tasks_path = data_dir.join("tasks.json");
@@ -185,6 +188,49 @@ impl Storage {
         let content = fs::read_to_string(path).await?;
         let tasks: Vec<Task> = serde_json::from_str(&content)?;
         Ok(tasks.into_iter().map(|t| (t.id.clone(), t)).collect())
+    }
+
+    fn default_data_dir() -> Result<PathBuf> {
+        let base_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Ok(base_dir.join(".standx-config"))
+    }
+
+    fn legacy_data_dir() -> Option<PathBuf> {
+        dirs::data_dir().map(|dir| dir.join("standx-mm"))
+    }
+
+    async fn migrate_legacy_files(new_dir: &Path, legacy_dir: &Path) -> Result<()> {
+        if !legacy_dir.exists() {
+            return Ok(());
+        }
+
+        let legacy_accounts = legacy_dir.join("accounts.json");
+        let legacy_tasks = legacy_dir.join("tasks.json");
+        let new_accounts = new_dir.join("accounts.json");
+        let new_tasks = new_dir.join("tasks.json");
+
+        Self::migrate_file_if_missing(&legacy_accounts, &new_accounts).await?;
+        Self::migrate_file_if_missing(&legacy_tasks, &new_tasks).await?;
+
+        Ok(())
+    }
+
+    async fn migrate_file_if_missing(legacy_path: &Path, new_path: &Path) -> Result<()> {
+        if new_path.exists() || !legacy_path.exists() {
+            return Ok(());
+        }
+
+        if let Err(err) = fs::rename(legacy_path, new_path).await {
+            fs::copy(legacy_path, new_path).await.map_err(|copy_err| {
+                anyhow!(
+                    "migrate {} -> {} failed: rename={err}; copy={copy_err}",
+                    legacy_path.display(),
+                    new_path.display()
+                )
+            })?;
+        }
+
+        Ok(())
     }
 
     pub async fn create_account(&self, account: Account) -> Result<()> {

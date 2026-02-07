@@ -6,6 +6,9 @@
 [POS]:    Strategy layer - conservative market making core loop.
 [UPDATE]: When changing tier ranges, sizing rules, drift thresholds, or cooldown/mode semantics.
 [UPDATE]: 2026-02-06 Align fusion tiers, weights, and fill backoff handling.
+[UPDATE]: 2026-02-07 Align order price/qty with tick constraints.
+[UPDATE]: 2026-02-07 Replace quotes when bps exits safety band.
+[UPDATE]: 2026-02-07 Budget reflects total bid+ask notional.
 */
 
 use std::collections::{HashMap, HashSet};
@@ -15,10 +18,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, RoundingStrategy};
 use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use standx_point_adapter::{
@@ -38,23 +41,27 @@ const FILL_BACKOFF_DURATION: Duration = Duration::from_secs(600);
 
 // Replace quotes when desired price drifts by >= 1 bps.
 const REPLACE_DRIFT_BPS: i64 = 1;
+const L1_MIN_REST: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RiskLevel {
-    Conservative,
-    Moderate,
-    Aggressive,
+    Low,
+    Medium,
+    High,
+    XHigh,
 }
 
 impl std::str::FromStr for RiskLevel {
     type Err = ();
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Ok(match value.trim().to_ascii_lowercase().as_str() {
-            "aggressive" => Self::Aggressive,
-            "moderate" => Self::Moderate,
-            _ => Self::Conservative,
-        })
+        match value.trim().to_ascii_lowercase().as_str() {
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::XHigh),
+            _ => Err(()),
+        }
     }
 }
 
@@ -69,6 +76,16 @@ impl StrategyMode {
         Self::Aggressive {
             target_bps: (Decimal::ZERO, Decimal::from(8)),
         }
+    }
+
+    pub fn aggressive_for_risk(risk_level: RiskLevel) -> Self {
+        let target_bps = match risk_level {
+            RiskLevel::Low => (Decimal::from(5), Decimal::from(30)),
+            RiskLevel::Medium => (Decimal::from(5), Decimal::from(15)),
+            RiskLevel::High => (Decimal::from(5), Decimal::from(10)),
+            RiskLevel::XHigh => (Decimal::from(5), Decimal::from(8)),
+        };
+        Self::Aggressive { target_bps }
     }
 
     pub fn survival_default() -> Self {
@@ -94,14 +111,18 @@ enum Tier {
     L1,
     L2,
     L3,
+    L4,
+    L5,
 }
 
 impl Tier {
     fn min_max_bps(self) -> (Decimal, Decimal) {
         match self {
-            Tier::L1 => (Decimal::ZERO, Decimal::from(5)),
-            Tier::L2 => (Decimal::from(5), Decimal::from(8)),
-            Tier::L3 => (Decimal::from(8), Decimal::from(10)),
+            Tier::L1 => (Decimal::from(5), Decimal::from(8)),
+            Tier::L2 => (Decimal::from(8), Decimal::from(10)),
+            Tier::L3 => (Decimal::from(10), Decimal::from(15)),
+            Tier::L4 => (Decimal::from(15), Decimal::from(20)),
+            Tier::L5 => (Decimal::from(20), Decimal::from(30)),
         }
     }
 
@@ -110,19 +131,23 @@ impl Tier {
             Tier::L1 => "l1",
             Tier::L2 => "l2",
             Tier::L3 => "l3",
+            Tier::L4 => "l4",
+            Tier::L5 => "l5",
         }
     }
 }
 
 const TIERS_L1: [Tier; 1] = [Tier::L1];
 const TIERS_L1_L2: [Tier; 2] = [Tier::L1, Tier::L2];
-const TIERS_ALL: [Tier; 3] = [Tier::L1, Tier::L2, Tier::L3];
+const TIERS_L1_L2_L3: [Tier; 3] = [Tier::L1, Tier::L2, Tier::L3];
+const TIERS_ALL: [Tier; 5] = [Tier::L1, Tier::L2, Tier::L3, Tier::L4, Tier::L5];
 
 fn normalize_tier_count(tiers: u8) -> usize {
     match tiers {
         0 | 1 => 1,
         2 => 2,
-        _ => 3,
+        3 => 3,
+        _ => 5,
     }
 }
 
@@ -159,6 +184,7 @@ struct LiveQuote {
     cl_ord_id: String,
     price: Decimal,
     qty: Decimal,
+    placed_at: tokio::time::Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -268,8 +294,13 @@ impl OrderExecutor for StandxClient {
 pub struct MarketMakingStrategy {
     symbol: String,
     base_qty: Decimal,
+    budget_usd: Decimal,
     tier_count: usize,
     risk_level: RiskLevel,
+    price_tick_decimals: Option<u32>,
+    qty_tick_decimals: Option<u32>,
+    min_order_qty: Option<Decimal>,
+    max_order_qty: Option<Decimal>,
     price_rx: watch::Receiver<SymbolPrice>,
     order_tracker: Arc<Mutex<OrderTracker>>,
     risk_manager: RiskManager,
@@ -282,6 +313,9 @@ pub struct MarketMakingStrategy {
     ask_backoff_until: Option<tokio::time::Instant>,
     live_quotes: HashMap<QuoteSlot, LiveQuote>,
     handled_fills: HashSet<String>,
+    inventory_qty: Decimal,
+    max_non_usd_value: Decimal,
+    bootstrap_side: Option<QuoteSide>,
 }
 
 impl MarketMakingStrategy {
@@ -297,8 +331,13 @@ impl MarketMakingStrategy {
         Self {
             symbol: String::new(),
             base_qty: Decimal::ZERO,
-            tier_count: 3,
-            risk_level: RiskLevel::Conservative,
+            budget_usd: Decimal::ZERO,
+            tier_count: 5,
+            risk_level: RiskLevel::Low,
+            price_tick_decimals: None,
+            qty_tick_decimals: None,
+            min_order_qty: None,
+            max_order_qty: None,
             price_rx: rx,
             order_tracker: Arc::new(Mutex::new(OrderTracker::new())),
             risk_manager: RiskManager::new(),
@@ -310,24 +349,39 @@ impl MarketMakingStrategy {
             ask_backoff_until: None,
             live_quotes: HashMap::new(),
             handled_fills: HashSet::new(),
+            inventory_qty: Decimal::ZERO,
+            max_non_usd_value: Decimal::ZERO,
+            bootstrap_side: None,
         }
     }
 
     pub fn new_with_params(
         symbol: String,
-        base_qty: Decimal,
+        budget_usd: Decimal,
         risk_level: RiskLevel,
         price_rx: watch::Receiver<SymbolPrice>,
         order_tracker: Arc<Mutex<OrderTracker>>,
         mode: StrategyMode,
         tier_count: u8,
+        initial_position_qty: Decimal,
     ) -> Self {
         let now = tokio::time::Instant::now();
+        let bootstrap_side = None;
+        let max_non_usd_value = if budget_usd <= Decimal::ZERO {
+            Decimal::ZERO
+        } else {
+            budget_usd
+        };
         Self {
             symbol,
-            base_qty,
+            base_qty: Decimal::ZERO,
+            budget_usd,
             tier_count: normalize_tier_count(tier_count),
             risk_level,
+            price_tick_decimals: None,
+            qty_tick_decimals: None,
+            min_order_qty: None,
+            max_order_qty: None,
             price_rx,
             order_tracker,
             risk_manager: RiskManager::new(),
@@ -339,6 +393,18 @@ impl MarketMakingStrategy {
             ask_backoff_until: None,
             live_quotes: HashMap::new(),
             handled_fills: HashSet::new(),
+            inventory_qty: initial_position_qty,
+            max_non_usd_value,
+            bootstrap_side,
+        }
+    }
+
+    pub(crate) fn tier_count_for_risk(risk_level: RiskLevel) -> u8 {
+        match risk_level {
+            RiskLevel::Low => 5,
+            RiskLevel::Medium => 3,
+            RiskLevel::High => 2,
+            RiskLevel::XHigh => 1,
         }
     }
 
@@ -350,6 +416,19 @@ impl MarketMakingStrategy {
 
     pub fn uptime_snapshot(&self) -> UptimeSnapshot {
         self.uptime_tracker.snapshot(tokio::time::Instant::now())
+    }
+
+    pub fn set_symbol_constraints(
+        &mut self,
+        price_tick_decimals: Option<u32>,
+        qty_tick_decimals: Option<u32>,
+        min_order_qty: Option<Decimal>,
+        max_order_qty: Option<Decimal>,
+    ) {
+        self.price_tick_decimals = price_tick_decimals;
+        self.qty_tick_decimals = qty_tick_decimals;
+        self.min_order_qty = min_order_qty;
+        self.max_order_qty = max_order_qty;
     }
 
     pub fn symbol(&self) -> &str {
@@ -369,6 +448,13 @@ impl MarketMakingStrategy {
         refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        info!(
+            symbol = %self.symbol,
+            risk_level = ?self.risk_level,
+            tier_count = self.tier_count,
+            "strategy run loop starting"
+        );
 
         // Try to quote immediately using the current snapshot.
         self.refresh_from_latest(executor, tokio::time::Instant::now())
@@ -392,8 +478,12 @@ impl MarketMakingStrategy {
                         continue;
                     }
 
-                    // Avoid refreshing on every price update; only kick-start quoting.
+                    let mark_price = self.price_rx.borrow().mark_price;
                     if self.live_quotes.is_empty() {
+                        // Kick-start quoting when idle.
+                        self.refresh_from_latest(executor, tokio::time::Instant::now()).await?;
+                    } else if self.should_refresh_for_price(mark_price, tokio::time::Instant::now()) {
+                        // Re-quote immediately when mark price drift exceeds threshold.
                         self.refresh_from_latest(executor, tokio::time::Instant::now()).await?;
                     }
                 }
@@ -482,8 +572,19 @@ impl MarketMakingStrategy {
         }
 
         for (slot, cl_ord_id) in filled_slots {
+            if self.bootstrap_side.is_some() {
+                self.bootstrap_side = None;
+                info!(symbol = %self.symbol, "bootstrap fill detected; switching to bilateral quoting");
+            }
             self.handled_fills.insert(cl_ord_id);
             self.risk_manager.record_fill(std::time::Instant::now());
+            if let Some(quote) = self.live_quotes.get(&slot) {
+                let signed_qty = match slot.side {
+                    QuoteSide::Bid => quote.qty,
+                    QuoteSide::Ask => -quote.qty,
+                };
+                self.inventory_qty += signed_qty;
+            }
             self.apply_fill_backoff(slot.side, now);
             self.live_quotes.remove(&slot);
         }
@@ -506,6 +607,7 @@ impl MarketMakingStrategy {
         now: tokio::time::Instant,
         mark_price: Decimal,
     ) -> Result<()> {
+        self.base_qty = self.derived_base_qty(mark_price);
         if self.base_qty <= Decimal::ZERO {
             self.cancel_all_quotes(executor).await;
             self.uptime_tracker.update(now, false);
@@ -514,6 +616,11 @@ impl MarketMakingStrategy {
 
         for tier in self.active_tiers() {
             for side in [QuoteSide::Bid, QuoteSide::Ask] {
+                if !self.bootstrap_allows_side(side) {
+                    let slot = QuoteSlot { tier: *tier, side };
+                    self.cancel_slot_if_present(executor, slot).await;
+                    continue;
+                }
                 let slot = QuoteSlot { tier: *tier, side };
                 self.refresh_slot(executor, now, mark_price, slot).await?;
             }
@@ -538,15 +645,17 @@ impl MarketMakingStrategy {
     ) -> Result<()> {
         let target_bps = self.target_bps_for_tier(slot.tier);
         let desired_price = price_at_bps(mark_price, slot.side.to_order_side(), target_bps);
+        let desired_price = self.align_price_for_order(desired_price);
         let desired_qty = self.desired_qty_for_slot(slot.tier, slot.side, target_bps, now);
+        let capped_qty = self.cap_qty_for_inventory(slot.side, desired_qty, mark_price);
         let backoff_active = self.is_backoff_active(slot.side, now);
 
-        if desired_qty <= Decimal::ZERO || desired_price <= Decimal::ZERO {
+        if capped_qty <= Decimal::ZERO || desired_price <= Decimal::ZERO {
             self.cancel_slot_if_present(executor, slot).await;
             return Ok(());
         }
 
-        let mut effective_qty = desired_qty;
+        let mut effective_qty = capped_qty;
 
         if let Some(existing) = self.live_quotes.get(&slot).cloned() {
             let tracked_state = {
@@ -557,11 +666,8 @@ impl MarketMakingStrategy {
             if let Some(tracked) = tracked_state {
                 match tracked.state {
                     OrderState::PartiallyFilled { remaining_qty, .. } => {
-                        if backoff_active {
-                            effective_qty = decimal_min(remaining_qty, desired_qty);
-                        } else {
-                            effective_qty = remaining_qty;
-                        }
+                        let capped_remaining = decimal_min(remaining_qty, capped_qty);
+                        effective_qty = capped_remaining;
                     }
                     OrderState::Filled { .. } => {
                         // Filled will be handled by `handle_fills`.
@@ -574,13 +680,37 @@ impl MarketMakingStrategy {
                 }
             }
 
+            effective_qty = self.align_qty_for_order(effective_qty);
+            if effective_qty <= Decimal::ZERO {
+                self.cancel_slot_if_present(executor, slot).await;
+                return Ok(());
+            }
+
             if let Some(still_live) = self.live_quotes.get(&slot) {
-                let wants_reduce = backoff_active && desired_qty < still_live.qty;
-                if should_replace(
+                let wants_reduce = backoff_active && capped_qty < still_live.qty;
+                let (band_min, band_max) = self.quote_band_for_tier(slot.tier);
+                let current_bps = bps_from_price(
+                    mark_price,
+                    slot.side.to_order_side(),
                     still_live.price,
-                    desired_price,
-                    self.replace_drift_threshold_bps(),
-                ) || wants_reduce {
+                );
+                let outside_band = current_bps < band_min || current_bps > band_max;
+                let drift_replace = if slot.tier == Tier::L1 {
+                    let age = now.saturating_duration_since(still_live.placed_at);
+                    if age >= L1_MIN_REST {
+                        should_replace(
+                            still_live.price,
+                            desired_price,
+                            self.replace_drift_threshold_bps(slot.tier),
+                        )
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if outside_band || drift_replace || wants_reduce {
                     self.cancel_slot_if_present(executor, slot).await;
                     self.place_slot(executor, now, slot, desired_price, effective_qty)
                         .await?;
@@ -595,12 +725,23 @@ impl MarketMakingStrategy {
             }
         }
 
+        effective_qty = self.align_qty_for_order(effective_qty);
+        if effective_qty <= Decimal::ZERO {
+            self.cancel_slot_if_present(executor, slot).await;
+            return Ok(());
+        }
+
         self.place_slot(executor, now, slot, desired_price, effective_qty)
             .await?;
         Ok(())
     }
 
     fn target_bps_for_tier(&self, tier: Tier) -> Decimal {
+        let (min, max) = self.quote_band_for_tier(tier);
+        (min + max) / Decimal::from(2)
+    }
+
+    fn quote_band_for_tier(&self, tier: Tier) -> (Decimal, Decimal) {
         let (tier_min, tier_max) = tier.min_max_bps();
         let (mode_min, mode_max) = self.mode.target_range();
 
@@ -608,10 +749,87 @@ impl MarketMakingStrategy {
         let max = decimal_min(tier_max, mode_max);
 
         if min <= max {
-            (min + max) / Decimal::from(2)
+            (min, max)
         } else {
-            (tier_min + tier_max) / Decimal::from(2)
+            (tier_min, tier_max)
         }
+    }
+
+    fn should_refresh_for_price(&self, mark_price: Decimal, now: tokio::time::Instant) -> bool {
+        if mark_price <= Decimal::ZERO {
+            return false;
+        }
+
+        for (slot, quote) in self.live_quotes.iter() {
+            let (band_min, band_max) = self.quote_band_for_tier(slot.tier);
+            let current_bps = bps_from_price(
+                mark_price,
+                slot.side.to_order_side(),
+                quote.price,
+            );
+            if current_bps < band_min || current_bps > band_max {
+                return true;
+            }
+
+            if slot.tier == Tier::L1 {
+                let age = now.saturating_duration_since(quote.placed_at);
+                if age >= L1_MIN_REST {
+                    let target_bps = self.target_bps_for_tier(slot.tier);
+                    let desired_price =
+                        price_at_bps(mark_price, slot.side.to_order_side(), target_bps);
+                    let drift_threshold = self.replace_drift_threshold_bps(slot.tier);
+                    if should_replace(quote.price, desired_price, drift_threshold) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
+    fn bootstrap_allows_side(&self, side: QuoteSide) -> bool {
+        self.bootstrap_side
+            .map_or(true, |bootstrap| bootstrap == side)
+    }
+
+    fn side_increases_inventory_abs(&self, side: QuoteSide) -> bool {
+        match side {
+            QuoteSide::Bid => self.inventory_qty >= Decimal::ZERO,
+            QuoteSide::Ask => self.inventory_qty <= Decimal::ZERO,
+        }
+    }
+
+    fn cap_qty_for_inventory(
+        &self,
+        side: QuoteSide,
+        desired_qty: Decimal,
+        mark_price: Decimal,
+    ) -> Decimal {
+        if desired_qty <= Decimal::ZERO {
+            return Decimal::ZERO;
+        }
+
+        if self.max_non_usd_value <= Decimal::ZERO {
+            return desired_qty;
+        }
+
+        if mark_price <= Decimal::ZERO {
+            return Decimal::ZERO;
+        }
+
+        if !self.side_increases_inventory_abs(side) {
+            return desired_qty;
+        }
+
+        let inventory_value = self.inventory_qty.abs() * mark_price;
+        if inventory_value >= self.max_non_usd_value {
+            return Decimal::ZERO;
+        }
+
+        let allowed_value = self.max_non_usd_value - inventory_value;
+        let allowed_qty = allowed_value / mark_price;
+        decimal_min(desired_qty, allowed_qty)
     }
 
     fn desired_qty_for_slot(
@@ -649,6 +867,27 @@ impl MarketMakingStrategy {
         self.base_qty * weight * multiplier * backoff
     }
 
+    fn derived_base_qty(&self, mark_price: Decimal) -> Decimal {
+        if mark_price <= Decimal::ZERO || self.budget_usd <= Decimal::ZERO {
+            return Decimal::ZERO;
+        }
+
+        let total_weight = self.total_weight();
+        if total_weight <= Decimal::ZERO {
+            return Decimal::ZERO;
+        }
+
+        // Split total budget across bid/ask; total notional equals budget_usd.
+        let per_side_budget = self.budget_usd / Decimal::from(2);
+        per_side_budget / mark_price / total_weight
+    }
+
+    fn total_weight(&self) -> Decimal {
+        self.active_tiers()
+            .iter()
+            .fold(Decimal::ZERO, |acc, tier| acc + self.tier_weight(*tier))
+    }
+
     fn tier_weight(&self, tier: Tier) -> Decimal {
         match self.tier_count {
             1 => match tier {
@@ -658,12 +897,20 @@ impl MarketMakingStrategy {
             2 => match tier {
                 Tier::L1 => Decimal::new(6, 1),
                 Tier::L2 => Decimal::new(4, 1),
-                Tier::L3 => Decimal::ZERO,
+                _ => Decimal::ZERO,
             },
-            _ => match tier {
+            3 => match tier {
                 Tier::L1 => Decimal::new(4, 1),
                 Tier::L2 => Decimal::new(35, 2),
                 Tier::L3 => Decimal::new(25, 2),
+                _ => Decimal::ZERO,
+            },
+            _ => match tier {
+                Tier::L1 => Decimal::new(3, 1),
+                Tier::L2 => Decimal::new(25, 2),
+                Tier::L3 => Decimal::new(2, 1),
+                Tier::L4 => Decimal::new(15, 2),
+                Tier::L5 => Decimal::new(1, 1),
             },
         }
     }
@@ -672,6 +919,7 @@ impl MarketMakingStrategy {
         match self.tier_count {
             1 => &TIERS_L1,
             2 => &TIERS_L1_L2,
+            3 => &TIERS_L1_L2_L3,
             _ => &TIERS_ALL,
         }
     }
@@ -717,12 +965,10 @@ impl MarketMakingStrategy {
         }
     }
 
-    fn replace_drift_threshold_bps(&self) -> Decimal {
-        // Conservative mode avoids churn by requiring larger drift before cancel+replace.
-        match self.risk_level {
-            RiskLevel::Conservative => Decimal::from(2),
-            RiskLevel::Moderate => Decimal::from(REPLACE_DRIFT_BPS),
-            RiskLevel::Aggressive => Decimal::from(REPLACE_DRIFT_BPS),
+    fn replace_drift_threshold_bps(&self, tier: Tier) -> Decimal {
+        match tier {
+            Tier::L1 => Decimal::new(25, 1),
+            _ => Decimal::from(REPLACE_DRIFT_BPS),
         }
     }
 
@@ -734,6 +980,11 @@ impl MarketMakingStrategy {
         price: Decimal,
         qty: Decimal,
     ) -> Result<()> {
+        let price = self.align_price_for_order(price);
+        if price <= Decimal::ZERO {
+            return Ok(());
+        }
+        let qty = self.align_qty_for_order(qty);
         if qty <= Decimal::ZERO {
             return Ok(());
         }
@@ -775,7 +1026,7 @@ impl MarketMakingStrategy {
                     warn!(symbol = %self.symbol, cl_ord_id = %cl_ord_id, error = %err, "order_tracker mark_sent failed");
                 }
 
-                debug!(
+                info!(
                     symbol = %self.symbol,
                     side = %slot.side.as_str(),
                     tier = %slot.tier.as_str(),
@@ -790,12 +1041,23 @@ impl MarketMakingStrategy {
                         cl_ord_id,
                         price,
                         qty,
+                        placed_at: now,
                     },
                 );
             }
             Ok(resp) => {
                 let mut tracker = self.order_tracker.lock().await;
                 let _ = tracker.mark_failed(&cl_ord_id, format!("new_order code={}", resp.code));
+                error!(
+                    symbol = %self.symbol,
+                    side = %slot.side.as_str(),
+                    tier = %slot.tier.as_str(),
+                    %price,
+                    %qty,
+                    code = resp.code,
+                    message = %resp.message,
+                    "new_order returned non-zero code"
+                );
                 return Err(anyhow!(
                     "new_order returned code={} message={}",
                     resp.code,
@@ -805,6 +1067,15 @@ impl MarketMakingStrategy {
             Err(err) => {
                 let mut tracker = self.order_tracker.lock().await;
                 let _ = tracker.mark_failed(&cl_ord_id, format!("new_order http={err}"));
+                error!(
+                    symbol = %self.symbol,
+                    side = %slot.side.as_str(),
+                    tier = %slot.tier.as_str(),
+                    %price,
+                    %qty,
+                    error = %err,
+                    "new_order http failed"
+                );
                 return Err(anyhow!(err));
             }
         }
@@ -834,7 +1105,7 @@ impl MarketMakingStrategy {
 
         match executor.cancel_order(req).await {
             Ok(resp) if resp.code == 0 => {
-                debug!(symbol = %self.symbol, cl_ord_id = %cl_ord_id, "cancel requested");
+                info!(symbol = %self.symbol, cl_ord_id = %cl_ord_id, "cancel requested");
             }
             Ok(resp) => {
                 warn!(
@@ -855,6 +1126,47 @@ impl MarketMakingStrategy {
         let slots: Vec<QuoteSlot> = self.live_quotes.keys().copied().collect();
         for slot in slots {
             self.cancel_slot_if_present(executor, slot).await;
+        }
+    }
+
+    fn align_qty_for_order(&self, qty: Decimal) -> Decimal {
+        if qty <= Decimal::ZERO {
+            return qty;
+        }
+
+        let mut aligned = match self.qty_tick_decimals {
+            Some(decimals) => qty.round_dp_with_strategy(decimals, RoundingStrategy::ToZero),
+            None => qty,
+        };
+
+        if let Some(max_qty) = self.max_order_qty {
+            if aligned > max_qty {
+                aligned = match self.qty_tick_decimals {
+                    Some(decimals) => {
+                        max_qty.round_dp_with_strategy(decimals, RoundingStrategy::ToZero)
+                    }
+                    None => max_qty,
+                };
+            }
+        }
+
+        if let Some(min_qty) = self.min_order_qty {
+            if aligned < min_qty {
+                return Decimal::ZERO;
+            }
+        }
+
+        aligned
+    }
+
+    fn align_price_for_order(&self, price: Decimal) -> Decimal {
+        if price <= Decimal::ZERO {
+            return price;
+        }
+
+        match self.price_tick_decimals {
+            Some(decimals) => price.round_dp_with_strategy(decimals, RoundingStrategy::ToZero),
+            None => price,
         }
     }
 }
@@ -894,6 +1206,23 @@ fn price_at_bps(mark_price: Decimal, side: Side, bps: Decimal) -> Decimal {
         Side::Buy => mark_price * (Decimal::ONE - ratio),
         Side::Sell => mark_price * (Decimal::ONE + ratio),
     }
+}
+
+fn bps_from_price(mark_price: Decimal, side: Side, price: Decimal) -> Decimal {
+    if mark_price <= Decimal::ZERO || price <= Decimal::ZERO {
+        return Decimal::ZERO;
+    }
+
+    let diff = match side {
+        Side::Buy => mark_price - price,
+        Side::Sell => price - mark_price,
+    };
+
+    if diff <= Decimal::ZERO {
+        return Decimal::ZERO;
+    }
+
+    (diff / mark_price) * Decimal::from(BPS_DENOMINATOR)
 }
 
 fn should_replace(current_price: Decimal, desired_price: Decimal, threshold_bps: Decimal) -> bool {
@@ -985,27 +1314,71 @@ mod tests {
     }
 
     #[test]
+    fn strategy_bps_from_price_is_relative_to_mark() {
+        let mark = dec("100");
+        let bid_bps = bps_from_price(mark, Side::Buy, dec("99.95"));
+        let ask_bps = bps_from_price(mark, Side::Sell, dec("100.05"));
+
+        assert_eq!(bid_bps, dec("5"));
+        assert_eq!(ask_bps, dec("5"));
+    }
+
+    #[test]
     fn strategy_mode_target_bps_respects_tier_ranges() {
         let (tx, rx) = watch::channel(initial_symbol_price("BTC-USD"));
         drop(tx);
 
         let strategy = MarketMakingStrategy::new_with_params(
             "BTC-USD".to_string(),
-            dec("1"),
-            RiskLevel::Conservative,
+            dec("1000"),
+            RiskLevel::Low,
             rx,
             Arc::new(Mutex::new(OrderTracker::new())),
             StrategyMode::aggressive_default(),
-            3,
+            5,
+            Decimal::ONE,
         );
 
         let l1 = strategy.target_bps_for_tier(Tier::L1);
         let l2 = strategy.target_bps_for_tier(Tier::L2);
         let l3 = strategy.target_bps_for_tier(Tier::L3);
+        let l4 = strategy.target_bps_for_tier(Tier::L4);
+        let l5 = strategy.target_bps_for_tier(Tier::L5);
 
-        assert!(l1 >= dec("0") && l1 <= dec("5"));
-        assert!(l2 >= dec("5") && l2 <= dec("8"));
-        assert!(l3 >= dec("8") && l3 <= dec("10"));
+        assert!(l1 >= dec("5") && l1 <= dec("8"));
+        assert!(l2 >= dec("8") && l2 <= dec("10"));
+        assert!(l3 >= dec("10") && l3 <= dec("15"));
+        assert!(l4 >= dec("15") && l4 <= dec("20"));
+        assert!(l5 >= dec("20") && l5 <= dec("30"));
+    }
+
+    #[test]
+    fn strategy_aligns_qty_to_tick_and_bounds() {
+        let mut strategy = MarketMakingStrategy::new();
+        strategy.set_symbol_constraints(
+            Some(2),
+            Some(2),
+            Some(dec("0.05")),
+            Some(dec("1.00")),
+        );
+
+        let rounded = strategy.align_qty_for_order(dec("0.1234"));
+        assert_eq!(rounded, dec("0.12"));
+
+        let too_small = strategy.align_qty_for_order(dec("0.041"));
+        assert_eq!(too_small, Decimal::ZERO);
+
+        let too_large = strategy.align_qty_for_order(dec("1.239"));
+        assert_eq!(too_large, dec("1.00"));
+    }
+
+    #[test]
+    fn strategy_aligns_price_to_tick() {
+        let mut strategy = MarketMakingStrategy::new();
+        strategy.set_symbol_constraints(Some(2), None, None, None);
+
+        let rounded = strategy.align_price_for_order(dec("4956.560550"));
+        assert_eq!(rounded, dec("4956.56"));
     }
 
     #[tokio::test]
@@ -1026,12 +1399,13 @@ mod tests {
         let executor = MockExecutor::default();
         let mut strategy = MarketMakingStrategy::new_with_params(
             "BTC-USD".to_string(),
-            dec("1"),
-            RiskLevel::Conservative,
+            dec("1000"),
+            RiskLevel::Low,
             rx,
             Arc::new(Mutex::new(OrderTracker::new())),
             StrategyMode::aggressive_default(),
-            3,
+            5,
+            Decimal::ONE,
         );
 
         strategy
@@ -1039,8 +1413,8 @@ mod tests {
             .await
             .unwrap();
 
-        // 3 tiers * 2 sides
-        assert_eq!(executor.new_order_count().await, 6);
+        // 5 tiers * 2 sides
+        assert_eq!(executor.new_order_count().await, 10);
 
         let last = executor.last_new_order().await.expect("has order");
         assert_eq!(last.order_type, OrderType::Limit);
@@ -1063,6 +1437,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn strategy_quotes_bilateral_from_start() {
+        let (_tx, rx) = watch::channel(SymbolPrice {
+            base: "BTC".to_string(),
+            index_price: dec("100"),
+            last_price: None,
+            mark_price: dec("100"),
+            mid_price: None,
+            quote: "USD".to_string(),
+            spread_ask: None,
+            spread_bid: None,
+            symbol: "BTC-USD".to_string(),
+            time: "0".to_string(),
+        });
+
+        let executor = MockExecutor::default();
+        let tracker = Arc::new(Mutex::new(OrderTracker::new()));
+        let mut strategy = MarketMakingStrategy::new_with_params(
+            "BTC-USD".to_string(),
+            dec("1000"),
+            RiskLevel::Low,
+            rx,
+            tracker,
+            StrategyMode::aggressive_default(),
+            5,
+            Decimal::ZERO,
+        );
+
+        strategy
+            .refresh_from_latest(&executor, tokio::time::Instant::now())
+            .await
+            .unwrap();
+
+        let orders = executor.new_orders.lock().await.clone();
+        assert_eq!(orders.len(), 10);
+        assert!(orders.iter().any(|order| order.side == Side::Buy));
+        assert!(orders.iter().any(|order| order.side == Side::Sell));
+    }
+
+    #[tokio::test]
+    async fn strategy_caps_bid_when_inventory_above_half_limit() {
+        let (_tx, rx) = watch::channel(SymbolPrice {
+            base: "BTC".to_string(),
+            index_price: dec("100"),
+            last_price: None,
+            mark_price: dec("100"),
+            mid_price: None,
+            quote: "USD".to_string(),
+            spread_ask: None,
+            spread_bid: None,
+            symbol: "BTC-USD".to_string(),
+            time: "0".to_string(),
+        });
+
+        let executor = MockExecutor::default();
+        let mut strategy = MarketMakingStrategy::new_with_params(
+            "BTC-USD".to_string(),
+            dec("1000"),
+            RiskLevel::Low,
+            rx,
+            Arc::new(Mutex::new(OrderTracker::new())),
+            StrategyMode::aggressive_default(),
+            5,
+            dec("10"),
+        );
+
+        strategy
+            .refresh_from_latest(&executor, tokio::time::Instant::now())
+            .await
+            .unwrap();
+
+        let orders = executor.new_orders.lock().await.clone();
+        assert!(orders.iter().all(|order| order.side == Side::Sell));
+    }
+
+    #[tokio::test]
     async fn strategy_full_fill_enters_survival_and_backoff() {
         let (_tx, rx) = watch::channel(SymbolPrice {
             base: "BTC".to_string(),
@@ -1082,19 +1531,20 @@ mod tests {
 
         let mut strategy = MarketMakingStrategy::new_with_params(
             "BTC-USD".to_string(),
-            dec("1"),
-            RiskLevel::Conservative,
+            dec("1000"),
+            RiskLevel::Low,
             rx,
             tracker.clone(),
             StrategyMode::aggressive_default(),
-            3,
+            5,
+            Decimal::ONE,
         );
 
         strategy
             .refresh_from_latest(&executor, tokio::time::Instant::now())
             .await
             .unwrap();
-        assert_eq!(executor.new_order_count().await, 6);
+        assert_eq!(executor.new_order_count().await, 10);
 
         // Mark one quote as filled.
         let slot = QuoteSlot {
@@ -1166,7 +1616,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         let last = l1_bid_orders.last().expect("has l1 bid orders");
-        assert_eq!(last.qty, dec("0.12"));
+        assert_eq!(last.qty, dec("0.45"));
     }
 
     #[tokio::test]
@@ -1188,12 +1638,13 @@ mod tests {
         let tracker = Arc::new(Mutex::new(OrderTracker::new()));
         let mut strategy = MarketMakingStrategy::new_with_params(
             "BTC-USD".to_string(),
-            dec("1"),
-            RiskLevel::Conservative,
+            dec("1000"),
+            RiskLevel::Low,
             rx,
             tracker.clone(),
             StrategyMode::aggressive_default(),
             3,
+            Decimal::ONE,
         );
 
         strategy
@@ -1267,9 +1718,9 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        // Expect the replacement order to use remaining quantity (0.4 - 0.1 = 0.3).
+        // Expect the replacement order to use remaining quantity (2.0 - 0.1 = 1.9).
         let last = l1_bid.last().expect("has l1 bid orders");
-        assert_eq!(last.qty, dec("0.3"));
+        assert_eq!(last.qty, dec("1.9"));
     }
 
     #[test]
@@ -1306,12 +1757,13 @@ mod tests {
         let executor = MockExecutor::default();
         let mut strategy = MarketMakingStrategy::new_with_params(
             "BTC-USD".to_string(),
-            dec("1"),
-            RiskLevel::Conservative,
+            dec("1000"),
+            RiskLevel::Low,
             rx,
             Arc::new(Mutex::new(OrderTracker::new())),
             StrategyMode::aggressive_default(),
             3,
+            Decimal::ONE,
         );
 
         strategy.risk_manager =
