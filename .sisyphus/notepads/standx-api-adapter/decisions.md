@@ -1,0 +1,5 @@
+- Kept existing glob re-exports in `src/lib.rs` to avoid expanding scope beyond requested changes.
+- Added `#[allow(dead_code)]` on `StandxClient` and its impl to keep diagnostics clean until HTTP methods are used by later tasks.
+- Kept auth flow types (`SigninData`, `LoginResponse`) local to `auth::manager` per task instructions and left HTTP calls as `todo!()` placeholders.
+- Used UUID v4 for request id generation in `RequestSigner` to match task requirements.
+- 鉴于 `StandxClient` 基础 URL 尚不可注入，集成测试使用 wiremock + reqwest 做最小化 HTTP 骨架验证，避免触发未实现的业务调用。

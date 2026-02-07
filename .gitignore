@@ -81,3 +81,4 @@ Settings.toml
 FileScopeMCP-tree.json
 mcp-debug.log
 .index
+/standx-point-gui.db*

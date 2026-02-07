@@ -1,0 +1,2 @@
+- `StandxClient`, `ClientConfig`, and `Credentials` are not defined yet, so `http` only re-exports error types for now.
+- None noted for this task.
