@@ -39,6 +39,7 @@ pub struct PaginatedOrders {
     #[serde(rename = "page_size")]
     pub page_size: u32,
     pub result: Vec<Order>,
+    #[serde(default)]
     pub total: u32,
 }
 

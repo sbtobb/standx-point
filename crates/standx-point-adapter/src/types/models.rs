@@ -18,6 +18,7 @@ pub struct SymbolInfo {
     #[serde(with = "rust_decimal::serde::str")]
     pub def_leverage: Decimal,
     pub depth_ticks: String,
+    #[serde(default)]
     pub enabled: bool,
     #[serde(with = "rust_decimal::serde::str")]
     pub maker_fee: Decimal,
@@ -84,41 +85,97 @@ pub struct Order {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Position {
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub bankruptcy_price: Decimal,
     pub created_at: String,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub entry_price: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub entry_value: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub holding_margin: Decimal,
     pub id: i64,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub initial_margin: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub leverage: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub liq_price: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub maint_margin: Decimal,
     pub margin_asset: String,
     pub margin_mode: MarginMode,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub mark_price: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub mmr: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub position_value: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub qty: Decimal,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub realized_pnl: Decimal,
     pub status: String,
     pub symbol: String,
     pub time: String,
     pub updated_at: String,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub upnl: Decimal,
     pub user: String,
 }
@@ -255,6 +312,7 @@ pub struct FundingRate {
 mod serde_helpers {
     use super::Decimal;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde_json::Value;
     use std::str::FromStr;
 
     pub fn deserialize_decimal_vec<'de, D>(deserializer: D) -> Result<Vec<Decimal>, D::Error>
@@ -274,5 +332,35 @@ mod serde_helpers {
     {
         let strings: Vec<String> = values.iter().map(Decimal::to_string).collect();
         strings.serialize(serializer)
+    }
+
+    pub fn deserialize_decimal_or_zero<'de, D>(deserializer: D) -> Result<Decimal, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        if value.is_null() {
+            return Ok(Decimal::ZERO);
+        }
+
+        if let Some(raw) = value.as_str() {
+            if raw.trim().is_empty() {
+                return Ok(Decimal::ZERO);
+            }
+            return Decimal::from_str(raw).map_err(serde::de::Error::custom);
+        }
+
+        if value.is_number() {
+            return Decimal::from_str(&value.to_string()).map_err(serde::de::Error::custom);
+        }
+
+        Err(serde::de::Error::custom("invalid decimal value"))
+    }
+
+    pub fn serialize_decimal<S>(value: &Decimal, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&value.to_string())
     }
 }
