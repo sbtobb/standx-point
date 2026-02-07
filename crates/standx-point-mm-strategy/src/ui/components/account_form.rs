@@ -1,3 +1,4 @@
+use ratatui::Frame;
 /// **Input**: `Account` domain model and ratatui layout/style primitives.
 /// **Output**: `AccountForm` state and `render` function for the account dialog.
 /// **Position**: TUI component for account create/edit dialog rendering.
@@ -6,7 +7,6 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
-use ratatui::Frame;
 use std::fmt;
 
 use crate::state::storage::Account;

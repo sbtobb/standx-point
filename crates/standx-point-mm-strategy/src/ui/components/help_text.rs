@@ -4,10 +4,10 @@
 [POS]:    TUI component for inline help/hint display.
 [UPDATE]: Add reusable help text renderer with wrapping for long hints.
 */
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Frame;
 
 /// Render the help text area.
 #[allow(dead_code)]

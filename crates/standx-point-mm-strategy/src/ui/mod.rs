@@ -1,6 +1,6 @@
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::widgets::{Block, Clear, Paragraph};
-use ratatui::Frame;
 
 use crate::app::state::AppState;
 use crate::state::storage::Storage;
@@ -73,8 +73,8 @@ fn render_overlay(frame: &mut Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     #[test]
     fn test_is_terminal_too_small() {

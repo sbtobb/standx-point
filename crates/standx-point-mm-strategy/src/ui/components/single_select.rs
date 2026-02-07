@@ -4,12 +4,12 @@
 /// **Update**: Revisit when selection behavior or styling changes.
 use std::fmt::Display;
 
+use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
-use ratatui::Frame;
 
 #[derive(Debug, Clone)]
 pub struct SingleSelect<T> {

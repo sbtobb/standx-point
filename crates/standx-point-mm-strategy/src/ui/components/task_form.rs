@@ -15,20 +15,16 @@ use super::single_select::SingleSelect;
 
 use crate::state::storage::Task;
 
-const DEFAULT_BASE_QTY: &str = "0.1";
-const DEFAULT_TIERS: u8 = 2;
-const DEFAULT_MAX_POSITION_USD: &str = "50000";
-const DEFAULT_PRICE_JUMP_THRESHOLD_BPS: &str = "5";
+const DEFAULT_BUDGET_USD: &str = "50000";
 const SYMBOL_OPTIONS: [&str; 4] = ["BTC-USD", "ETH-USD", "XAG-USD", "XAU-USD"];
-const RISK_LEVEL_OPTIONS: [&str; 3] = ["conservative", "moderate", "aggressive"];
+const RISK_LEVEL_OPTIONS: [&str; 4] = ["low", "medium", "high", "xhigh"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskField {
     Symbol,
     AccountId,
     RiskLevel,
-    MaxPositionUsd,
-    PriceJumpThresholdBps,
+    BudgetUsd,
 }
 
 impl TaskField {
@@ -36,19 +32,17 @@ impl TaskField {
         match self {
             TaskField::Symbol => TaskField::AccountId,
             TaskField::AccountId => TaskField::RiskLevel,
-            TaskField::RiskLevel => TaskField::MaxPositionUsd,
-            TaskField::MaxPositionUsd => TaskField::PriceJumpThresholdBps,
-            TaskField::PriceJumpThresholdBps => TaskField::Symbol,
+            TaskField::RiskLevel => TaskField::BudgetUsd,
+            TaskField::BudgetUsd => TaskField::Symbol,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
-            TaskField::Symbol => TaskField::PriceJumpThresholdBps,
+            TaskField::Symbol => TaskField::BudgetUsd,
             TaskField::AccountId => TaskField::Symbol,
             TaskField::RiskLevel => TaskField::AccountId,
-            TaskField::MaxPositionUsd => TaskField::RiskLevel,
-            TaskField::PriceJumpThresholdBps => TaskField::MaxPositionUsd,
+            TaskField::BudgetUsd => TaskField::RiskLevel,
         }
     }
 }
@@ -75,10 +69,7 @@ pub struct TaskForm {
     pub symbol: String,
     pub account_id: String,
     pub risk_level: String,
-    pub max_position_usd: String,
-    pub price_jump_threshold_bps: String,
-    pub base_qty: String,
-    pub tiers: u8,
+    pub budget_usd: String,
     pub error_message: Option<String>,
     pub focused_field: TaskField,
     pub symbol_select: SingleSelect<String>,
@@ -106,10 +97,7 @@ impl TaskForm {
             symbol,
             account_id: String::new(),
             risk_level,
-            max_position_usd: DEFAULT_MAX_POSITION_USD.to_string(),
-            price_jump_threshold_bps: DEFAULT_PRICE_JUMP_THRESHOLD_BPS.to_string(),
-            base_qty: DEFAULT_BASE_QTY.to_string(),
-            tiers: DEFAULT_TIERS,
+            budget_usd: DEFAULT_BUDGET_USD.to_string(),
             error_message: None,
             focused_field: TaskField::Symbol,
             symbol_select,
@@ -140,10 +128,7 @@ impl TaskForm {
             symbol: task.symbol.clone(),
             account_id: task.account_id.clone(),
             risk_level: task.risk_level.clone(),
-            max_position_usd: task.max_position_usd.clone(),
-            price_jump_threshold_bps: task.price_jump_threshold_bps.to_string(),
-            base_qty: task.base_qty.clone(),
-            tiers: task.tiers,
+            budget_usd: task.budget_usd.clone(),
             error_message: None,
             focused_field: TaskField::Symbol,
             symbol_select,
@@ -165,27 +150,16 @@ impl TaskForm {
         if self.risk_level.is_empty() {
             return Err("Risk level is required".to_string());
         }
-        if self.max_position_usd.is_empty() {
-            return Err("Max position USD is required".to_string());
+        if self.budget_usd.is_empty() {
+            return Err("Budget USD is required".to_string());
         }
-        if self.price_jump_threshold_bps.is_empty() {
-            return Err("Price jump threshold bps is required".to_string());
-        }
-
-        let price_jump_threshold_bps = self
-            .price_jump_threshold_bps
-            .parse::<u32>()
-            .map_err(|_| "Price jump threshold bps must be a valid number".to_string())?;
 
         let task = Task::new(
             self.id.clone(),
             self.symbol.clone(),
             self.account_id.clone(),
             self.risk_level.clone(),
-            self.max_position_usd.clone(),
-            price_jump_threshold_bps,
-            self.base_qty.clone(),
-            self.tiers,
+            self.budget_usd.clone(),
         );
 
         task.validate().map_err(|e| e.to_string())?;
@@ -308,8 +282,8 @@ pub fn render(frame: &mut Frame, area: Rect, form: &TaskForm, is_edit: bool) {
     ]));
     content.push(Line::from(""));
 
-    // Max Position USD field
-    let max_position_style = if form.focused_field == TaskField::MaxPositionUsd {
+    // Budget USD field
+    let budget_style = if form.focused_field == TaskField::BudgetUsd {
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
@@ -317,28 +291,9 @@ pub fn render(frame: &mut Frame, area: Rect, form: &TaskForm, is_edit: bool) {
         Style::default().fg(Color::Cyan)
     };
     content.push(Line::from(vec![
-        Span::styled("Max Position (USD):        ", max_position_style),
-        Span::raw(&form.max_position_usd),
-        if form.focused_field == TaskField::MaxPositionUsd {
-            Span::styled(" █", Style::default().fg(Color::Yellow))
-        } else {
-            Span::raw("")
-        },
-    ]));
-    content.push(Line::from(""));
-
-    // Price Jump Threshold BPS field
-    let price_jump_style = if form.focused_field == TaskField::PriceJumpThresholdBps {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Cyan)
-    };
-    content.push(Line::from(vec![
-        Span::styled("Price Jump Threshold (bps):", price_jump_style),
-        Span::raw(&form.price_jump_threshold_bps),
-        if form.focused_field == TaskField::PriceJumpThresholdBps {
+        Span::styled("Budget (USD):             ", budget_style),
+        Span::raw(&form.budget_usd),
+        if form.focused_field == TaskField::BudgetUsd {
             Span::styled(" █", Style::default().fg(Color::Yellow))
         } else {
             Span::raw("")
@@ -386,9 +341,8 @@ pub fn render(frame: &mut Frame, area: Rect, form: &TaskForm, is_edit: bool) {
     let help_text = match form.focused_field {
         TaskField::Symbol => "选择交易对（单选）",
         TaskField::AccountId => "选择已有账户，或按 Enter 创建新账户",
-        TaskField::RiskLevel => "选择风险等级：保守/中性/激进",
-        TaskField::MaxPositionUsd => "最大仓位（USD），仅输入数字",
-        TaskField::PriceJumpThresholdBps => "价格跳变阈值（bps/sec），仅输入数字",
+        TaskField::RiskLevel => "选择风险等级：低/中/高/超高",
+        TaskField::BudgetUsd => "可投入预算（USD），仅输入数字",
     };
     help_text::render(frame, help_area, help_text);
 }
@@ -426,13 +380,7 @@ mod tests {
         assert_eq!(form.symbol, SYMBOL_OPTIONS[0]);
         assert!(form.account_id.is_empty());
         assert_eq!(form.risk_level, RISK_LEVEL_OPTIONS[0]);
-        assert_eq!(form.max_position_usd, DEFAULT_MAX_POSITION_USD);
-        assert_eq!(
-            form.price_jump_threshold_bps,
-            DEFAULT_PRICE_JUMP_THRESHOLD_BPS
-        );
-        assert_eq!(form.base_qty, DEFAULT_BASE_QTY);
-        assert_eq!(form.tiers, DEFAULT_TIERS);
+        assert_eq!(form.budget_usd, DEFAULT_BUDGET_USD);
         assert!(form.error_message.is_none());
         assert_eq!(form.focused_field, TaskField::Symbol);
     }
@@ -443,7 +391,7 @@ mod tests {
         form.id.clear();
         form.symbol = "BTC-USD".to_string();
         form.account_id = "account-1".to_string();
-        form.risk_level = "conservative".to_string();
+        form.risk_level = "low".to_string();
 
         let result = form.to_task();
         assert!(result.is_err());
