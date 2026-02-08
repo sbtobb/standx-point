@@ -10,6 +10,7 @@
 [UPDATE]: 2026-02-07 Move symbol cache to TaskManager scope
 [UPDATE]: 2026-02-07 Wire price tick constraints to strategy
 [UPDATE]: 2026-02-07 Guard positions with fee-aware limit exits
+[UPDATE]: 2026-02-08 Support wallet private key auth configuration
 */
 
 use crate::config::{AccountConfig, StrategyConfig, TaskConfig};
@@ -20,8 +21,9 @@ use anyhow::{Context as _, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
+use standx_point_adapter::auth::{AuthManager, EvmWalletSigner, SolanaWalletSigner};
 use standx_point_adapter::{
-    Balance, CancelOrderRequest, ClientConfig, Credentials, Ed25519Signer, NewOrderRequest,
+    Balance, CancelOrderRequest, Chain, ClientConfig, Credentials, Ed25519Signer, NewOrderRequest,
     Order, OrderStatus, OrderType, PaginatedOrders, Position, Side, StandxClient, StandxError,
     SymbolPrice, SymbolInfo, TimeInForce, WebSocketMessage, StandxWebSocket,
 };
@@ -40,6 +42,7 @@ use uuid::Uuid;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const POSITION_GUARD_COOLDOWN: Duration = Duration::from_secs(5);
 const POSITION_GUARD_RETRY_DELAY: Duration = Duration::from_secs(1);
+const POSITION_GUARD_POLL_INTERVAL: Duration = Duration::from_secs(10);
 const BPS_DENOMINATOR: i64 = 10_000;
 const DEFAULT_EXIT_BPS_CONSERVATIVE: i64 = 8;
 const DEFAULT_EXIT_BPS_MODERATE: i64 = 5;
@@ -48,6 +51,7 @@ const DEFAULT_GUARD_BPS_CONSERVATIVE: i64 = 30;
 const DEFAULT_GUARD_BPS_MODERATE: i64 = 50;
 const DEFAULT_GUARD_BPS_AGGRESSIVE: i64 = 80;
 const DEFAULT_FEE_BPS: i64 = 2;
+const DEFAULT_JWT_EXPIRES_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 static PANIC_HOOK_ONCE: Once = Once::new();
 
@@ -94,6 +98,27 @@ struct SymbolCache {
     symbols: HashMap<String, SymbolInfo>,
 }
 
+#[derive(Debug)]
+struct AccountAuth {
+    jwt_token: String,
+    signing_key: [u8; 32],
+    wallet_address: String,
+    chain: Chain,
+}
+
+impl AccountAuth {
+    fn from_static(account: &AccountConfig, jwt_token: &str, signing_key_base64: &str) -> Result<Self> {
+        let signing_key = decode_ed25519_secret_key_base64(signing_key_base64)
+            .context("decode signing_key (base64) failed")?;
+        Ok(Self {
+            jwt_token: jwt_token.to_string(),
+            signing_key,
+            wallet_address: "unknown".to_string(),
+            chain: account.chain,
+        })
+    }
+}
+
 /// Task manager that coordinates multiple trading tasks.
 #[derive(Debug)]
 pub struct TaskManager {
@@ -106,6 +131,76 @@ pub struct TaskManager {
 
     #[cfg(test)]
     test_price_txs: Vec<watch::Sender<SymbolPrice>>,
+}
+
+async fn resolve_account_auth(
+    account: &AccountConfig,
+    client_config: ClientConfig,
+    auth_base_url: &str,
+    trading_base_url: &str,
+) -> Result<AccountAuth> {
+    if let (Some(jwt_token), Some(signing_key)) =
+        (account.jwt_token.as_deref(), account.signing_key.as_deref())
+    {
+        let jwt_token = jwt_token.trim();
+        let signing_key = signing_key.trim();
+        if !jwt_token.is_empty() && !signing_key.is_empty() {
+            return AccountAuth::from_static(account, jwt_token, signing_key);
+        }
+    }
+
+    let private_key = account
+        .private_key
+        .as_deref()
+        .unwrap_or("")
+        .trim();
+    if private_key.is_empty() {
+        return Err(anyhow!(
+            "account {} missing private_key (jwt_token+signing_key not provided)",
+            account.id
+        ));
+    }
+
+    let auth_client = StandxClient::with_config_and_base_urls(
+        client_config,
+        auth_base_url,
+        trading_base_url,
+    )
+    .map_err(|err| anyhow!("create StandxClient for auth failed: {err}"))?;
+    let auth = AuthManager::new(auth_client);
+
+    let (wallet_address, jwt_token) = match account.chain {
+        Chain::Bsc => {
+            let wallet =
+                EvmWalletSigner::new(private_key).map_err(|err| anyhow!("invalid EVM private key: {err}"))?;
+            let login = auth
+                .authenticate(&wallet, DEFAULT_JWT_EXPIRES_SECONDS)
+                .await
+                .map_err(|err| anyhow!("authenticate failed: {err}"))?;
+            (wallet.address().to_string(), login.token)
+        }
+        Chain::Solana => {
+            let wallet = SolanaWalletSigner::new(private_key)
+                .map_err(|err| anyhow!("invalid Solana private key: {err}"))?;
+            let login = auth
+                .authenticate(&wallet, DEFAULT_JWT_EXPIRES_SECONDS)
+                .await
+                .map_err(|err| anyhow!("authenticate failed: {err}"))?;
+            (wallet.address().to_string(), login.token)
+        }
+    };
+
+    let signer = auth
+        .key_manager()
+        .get_or_create_signer(&wallet_address)
+        .map_err(|err| anyhow!("load ed25519 signer failed: {err}"))?;
+
+    Ok(AccountAuth {
+        jwt_token,
+        signing_key: signer.secret_key_bytes(),
+        wallet_address,
+        chain: account.chain,
+    })
 }
 
 impl TaskManager {
@@ -164,8 +259,8 @@ impl TaskManager {
 
     /// Spawn tasks from configuration using the default StandxClient builder.
     pub async fn spawn_from_config(&mut self, config: StrategyConfig) -> Result<()> {
-        self.spawn_from_config_with_client_builder(config, |task_config, account| {
-            Task::build_client(task_config, account)
+        self.spawn_from_config_with_client_builder(config, |task_config, account, auth| {
+            Task::build_client(task_config, account, auth)
         })
         .await
     }
@@ -179,12 +274,25 @@ impl TaskManager {
         build_client: F,
     ) -> Result<()>
     where
-        F: Fn(&TaskConfig, &AccountConfig) -> Result<StandxClient>,
+        F: Fn(&TaskConfig, &AccountConfig, &AccountAuth) -> Result<StandxClient>,
     {
         ensure_panic_hook_installed();
 
-        let accounts_by_id: HashMap<String, AccountConfig> = config
-            .accounts
+        let accounts = config.accounts;
+        let mut auth_by_id: HashMap<String, AccountAuth> = HashMap::new();
+        for account in &accounts {
+            let auth = resolve_account_auth(
+                account,
+                ClientConfig::default(),
+                "https://api.standx.com",
+                "https://perps.standx.com",
+            )
+            .await
+            .with_context(|| format!("authenticate account_id={}", account.id))?;
+            auth_by_id.insert(account.id.clone(), auth);
+        }
+
+        let accounts_by_id: HashMap<String, AccountConfig> = accounts
             .into_iter()
             .map(|account| (account.id.clone(), account))
             .collect();
@@ -202,8 +310,11 @@ impl TaskManager {
             let account = accounts_by_id.get(&task_config.account_id).ok_or_else(|| {
                 anyhow!("account_id not found for task_id={}", task_config.id)
             })?;
+            let account_auth = auth_by_id.get(&task_config.account_id).ok_or_else(|| {
+                anyhow!("account auth not found for task_id={}", task_config.id)
+            })?;
 
-            let client = build_client(&task_config, account)
+            let client = build_client(&task_config, account, account_auth)
                 .with_context(|| format!("build StandxClient for task_id={}", task_config.id))?;
 
             let price_rx = self.subscribe_price(&task_config.symbol).await;
@@ -213,7 +324,7 @@ impl TaskManager {
             let task = Task::new_with_client(
                 task_config,
                 client,
-                account.jwt_token.clone(),
+                account_auth.jwt_token.clone(),
                 price_rx,
                 shutdown.clone(),
                 self.symbol_cache.clone(),
@@ -410,24 +521,30 @@ impl Task {
     pub fn try_from_config(
         config: TaskConfig,
         account: &AccountConfig,
+        account_auth: &AccountAuth,
         price_rx: watch::Receiver<SymbolPrice>,
         shutdown: CancellationToken,
     ) -> Result<Self> {
-        let client = Self::build_client(&config, account)?;
+        let client = Self::build_client(&config, account, account_auth)?;
         Ok(Self::new_with_client(
             config,
             client,
-            account.jwt_token.clone(),
+            account_auth.jwt_token.clone(),
             price_rx,
             shutdown,
             std::sync::Arc::new(Mutex::new(SymbolCache::default())),
         ))
     }
 
-    pub fn build_client(config: &TaskConfig, account: &AccountConfig) -> Result<StandxClient> {
+    pub fn build_client(
+        config: &TaskConfig,
+        _account: &AccountConfig,
+        account_auth: &AccountAuth,
+    ) -> Result<StandxClient> {
         Self::build_client_with_config_and_base_urls(
             config,
-            account,
+            _account,
+            account_auth,
             ClientConfig::default(),
             "https://api.standx.com",
             "https://perps.standx.com",
@@ -436,7 +553,8 @@ impl Task {
 
     pub fn build_client_with_config_and_base_urls(
         _config: &TaskConfig,
-        account: &AccountConfig,
+        _account: &AccountConfig,
+        account_auth: &AccountAuth,
         client_config: ClientConfig,
         auth_base_url: &str,
         trading_base_url: &str,
@@ -445,19 +563,13 @@ impl Task {
             StandxClient::with_config_and_base_urls(client_config, auth_base_url, trading_base_url)
                 .map_err(|err| anyhow!("create StandxClient failed: {err}"))?;
 
-        let secret_key = decode_ed25519_secret_key_base64(&account.signing_key)
-            .context("decode signing_key (base64) failed")?;
-        let signer = Ed25519Signer::from_secret_key(&secret_key);
-
-        // NOTE: wallet_address/chain are not required for trading endpoints today.
-        // Keep placeholders until StrategyConfig carries these fields.
         client.set_credentials_and_signer(
             Credentials {
-                jwt_token: account.jwt_token.clone(),
-                wallet_address: "unknown".to_string(),
-                chain: account.chain,
+                jwt_token: account_auth.jwt_token.clone(),
+                wallet_address: account_auth.wallet_address.clone(),
+                chain: account_auth.chain,
             },
-            signer,
+            Ed25519Signer::from_secret_key(&account_auth.signing_key),
         );
 
         Ok(client)
@@ -1296,6 +1408,11 @@ impl Task {
             .ok_or_else(|| anyhow!("position guard ws receiver already taken"))?;
 
         let mut guard_state = PositionGuardState::default();
+        let mut position_poll = tokio::time::interval_at(
+            Instant::now() + POSITION_GUARD_POLL_INTERVAL,
+            POSITION_GUARD_POLL_INTERVAL,
+        );
+        position_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
@@ -1323,68 +1440,76 @@ impl Task {
                         if update.symbol != task_symbol {
                             continue;
                         }
-
-                        if update.qty.is_zero() {
-                            guard_state.position_qty = Decimal::ZERO;
-                            if let Some(order) = guard_state.guard_order.take() {
-                                Self::cancel_guard_order(client, task_uuid, task_id, &order.cl_ord_id).await;
-                            }
-                            continue;
-                        }
-
-                        guard_state.position_qty = update.qty;
                         let mark_price = price_rx.borrow().mark_price;
                         let symbol_info = {
                             let cache = symbol_cache.lock().await;
                             cache.symbols.get(task_symbol).cloned()
                         };
-                        let policy = exit_guard_policy_for_risk(risk_level, symbol_info.as_ref());
 
-                        if let Some(last_close) = guard_state.last_force_close {
-                            if last_close.elapsed() < POSITION_GUARD_COOLDOWN {
-                                continue;
-                            }
-                        }
-
-                        let Some((side, price)) = exit_price_for_position(
-                            mark_price,
-                            update.qty,
-                            policy,
-                            symbol_info.as_ref(),
-                        ) else {
-                            tracing::warn!(
-                                task_uuid = %task_uuid,
-                                task_id = %task_id,
-                                symbol = %update.symbol,
-                                qty = %update.qty,
-                                "position guard skipped: invalid mark price or exit price"
-                            );
-                            continue;
-                        };
-
-                        let qty = update.qty.abs();
-                        if let Some(existing) = guard_state.guard_order.as_ref() {
-                            if existing.side == side && existing.price == price && existing.qty == qty {
-                                continue;
-                            }
-                        }
-
-                        if let Some(order) = guard_state.guard_order.take() {
-                            Self::cancel_guard_order(client, task_uuid, task_id, &order.cl_ord_id).await;
-                        }
-
-                        if let Some(order) = Self::place_guard_order(
+                        Self::apply_position_guard_update(
                             client,
                             task_uuid,
                             task_id,
                             task_symbol,
-                            side,
-                            qty,
-                            price,
-                        ).await {
-                            guard_state.guard_order = Some(order);
-                        }
+                            update.qty,
+                            mark_price,
+                            symbol_info,
+                            risk_level,
+                            &mut guard_state,
+                        ).await;
                     }
+                }
+                _ = position_poll.tick() => {
+                    let polled_qty = match client.query_positions(Some(task_symbol)).await {
+                        Ok(positions) => positions
+                            .into_iter()
+                            .filter(|position| position.symbol == task_symbol)
+                            .fold(Decimal::ZERO, |acc, position| acc + position.qty),
+                        Err(err) => {
+                            tracing::warn!(
+                                task_uuid = %task_uuid,
+                                task_id = %task_id,
+                                symbol = %task_symbol,
+                                "position guard poll query_positions failed: {err}"
+                            );
+                            continue;
+                        }
+                    };
+
+                    let needs_update = polled_qty != guard_state.position_qty
+                        || (polled_qty.is_zero() && guard_state.guard_order.is_some())
+                        || (!polled_qty.is_zero() && guard_state.guard_order.is_none());
+
+                    if !needs_update {
+                        continue;
+                    }
+
+                    tracing::info!(
+                        task_uuid = %task_uuid,
+                        task_id = %task_id,
+                        symbol = %task_symbol,
+                        polled_qty = %polled_qty,
+                        cached_qty = %guard_state.position_qty,
+                        "position guard poll detected mismatch"
+                    );
+
+                    let mark_price = price_rx.borrow().mark_price;
+                    let symbol_info = {
+                        let cache = symbol_cache.lock().await;
+                        cache.symbols.get(task_symbol).cloned()
+                    };
+
+                    Self::apply_position_guard_update(
+                        client,
+                        task_uuid,
+                        task_id,
+                        task_symbol,
+                        polled_qty,
+                        mark_price,
+                        symbol_info,
+                        risk_level,
+                        &mut guard_state,
+                    ).await;
                 }
                 changed = price_rx.changed() => {
                     if changed.is_err() {
@@ -1472,6 +1597,76 @@ impl Task {
                     }
                 }
             }
+        }
+    }
+}
+
+impl Task {
+    async fn apply_position_guard_update(
+        client: &StandxClient,
+        task_uuid: Uuid,
+        task_id: &str,
+        task_symbol: &str,
+        position_qty: Decimal,
+        mark_price: Decimal,
+        symbol_info: Option<SymbolInfo>,
+        risk_level: RiskLevel,
+        guard_state: &mut PositionGuardState,
+    ) {
+        if position_qty.is_zero() {
+            guard_state.position_qty = Decimal::ZERO;
+            if let Some(order) = guard_state.guard_order.take() {
+                Self::cancel_guard_order(client, task_uuid, task_id, &order.cl_ord_id).await;
+            }
+            return;
+        }
+
+        guard_state.position_qty = position_qty;
+        let policy = exit_guard_policy_for_risk(risk_level, symbol_info.as_ref());
+
+        if let Some(last_close) = guard_state.last_force_close {
+            if last_close.elapsed() < POSITION_GUARD_COOLDOWN {
+                return;
+            }
+        }
+
+        let Some((side, price)) = exit_price_for_position(
+            mark_price,
+            position_qty,
+            policy,
+            symbol_info.as_ref(),
+        ) else {
+            tracing::warn!(
+                task_uuid = %task_uuid,
+                task_id = %task_id,
+                symbol = %task_symbol,
+                qty = %position_qty,
+                "position guard skipped: invalid mark price or exit price"
+            );
+            return;
+        };
+
+        let qty = position_qty.abs();
+        if let Some(existing) = guard_state.guard_order.as_ref() {
+            if existing.side == side && existing.price == price && existing.qty == qty {
+                return;
+            }
+        }
+
+        if let Some(order) = guard_state.guard_order.take() {
+            Self::cancel_guard_order(client, task_uuid, task_id, &order.cl_ord_id).await;
+        }
+
+        if let Some(order) = Self::place_guard_order(
+            client,
+            task_uuid,
+            task_id,
+            task_symbol,
+            side,
+            qty,
+            price,
+        ).await {
+            guard_state.guard_order = Some(order);
         }
     }
 }
@@ -2017,10 +2212,17 @@ mod tests {
     fn test_account_config(id: &str, jwt: &str, signing_key_base64: &str) -> AccountConfig {
         AccountConfig {
             id: id.to_string(),
-            jwt_token: jwt.to_string(),
-            signing_key: signing_key_base64.to_string(),
+            private_key: None,
+            jwt_token: Some(jwt.to_string()),
+            signing_key: Some(signing_key_base64.to_string()),
             chain: standx_point_adapter::Chain::Bsc,
         }
+    }
+
+    fn test_account_auth(account: &AccountConfig) -> AccountAuth {
+        let jwt = account.jwt_token.as_deref().unwrap_or("");
+        let signing_key = account.signing_key.as_deref().unwrap_or("");
+        AccountAuth::from_static(account, jwt, signing_key).expect("static auth should succeed")
     }
 
     fn test_order_json(order_id: i64, symbol: &str) -> serde_json::Value {
@@ -2156,10 +2358,12 @@ mod tests {
             .await;
 
         let account = test_account_config("account-1", jwt, &signing_key_base64);
+        let account_auth = test_account_auth(&account);
         let task_config = test_task_config(symbol, &account.id);
         let client = Task::build_client_with_config_and_base_urls(
             &task_config,
             &account,
+            &account_auth,
             ClientConfig::default(),
             &base_url,
             &base_url,
@@ -2172,7 +2376,7 @@ mod tests {
         let mut task = Task::new_with_client(
             task_config,
             client,
-            account.jwt_token.clone(),
+            account_auth.jwt_token.clone(),
             rx,
             shutdown,
             symbol_cache,
@@ -2256,10 +2460,12 @@ mod tests {
             .await;
 
         let account = test_account_config("account-1", jwt, &signing_key_base64);
+        let account_auth = test_account_auth(&account);
         let task_config = test_task_config(symbol, &account.id);
         let client = Task::build_client_with_config_and_base_urls(
             &task_config,
             &account,
+            &account_auth,
             ClientConfig::default(),
             &base_url,
             &base_url,
@@ -2272,7 +2478,7 @@ mod tests {
         let mut task = Task::new_with_client(
             task_config,
             client,
-            account.jwt_token.clone(),
+            account_auth.jwt_token.clone(),
             rx,
             shutdown,
             symbol_cache,
@@ -2320,10 +2526,12 @@ mod tests {
             .await;
 
         let account = test_account_config("account-1", jwt, &signing_key_base64);
+        let account_auth = test_account_auth(&account);
         let task_config = test_task_config(symbol, &account.id);
         let client = Task::build_client_with_config_and_base_urls(
             &task_config,
             &account,
+            &account_auth,
             ClientConfig::default(),
             &base_url,
             &base_url,
@@ -2336,7 +2544,7 @@ mod tests {
         let mut task = Task::new_with_client(
             task_config,
             client,
-            account.jwt_token.clone(),
+            account_auth.jwt_token.clone(),
             rx,
             shutdown,
             symbol_cache,
@@ -2439,10 +2647,12 @@ mod tests {
             .await;
 
         let account = test_account_config("account-1", jwt, &signing_key_base64);
+        let account_auth = test_account_auth(&account);
         let task_config = test_task_config(symbol, &account.id);
         let client = Task::build_client_with_config_and_base_urls(
             &task_config,
             &account,
+            &account_auth,
             ClientConfig::default(),
             &base_url,
             &base_url,
@@ -2455,7 +2665,7 @@ mod tests {
         let task = Task::new_with_client(
             task_config,
             client,
-            account.jwt_token.clone(),
+            account_auth.jwt_token.clone(),
             rx,
             shutdown,
             symbol_cache,
@@ -2519,10 +2729,11 @@ mod tests {
             connect_timeout: Duration::from_secs(30),
         };
         manager
-            .spawn_from_config_with_client_builder(strategy_config, |cfg, account_cfg| {
+            .spawn_from_config_with_client_builder(strategy_config, |cfg, account_cfg, account_auth| {
                 Task::build_client_with_config_and_base_urls(
                     cfg,
                     account_cfg,
+                    account_auth,
                     client_config.clone(),
                     &base_url,
                     &base_url,
@@ -2608,10 +2819,11 @@ mod tests {
             connect_timeout: Duration::from_secs(30),
         };
         manager
-            .spawn_from_config_with_client_builder(strategy_config, |cfg, account_cfg| {
+            .spawn_from_config_with_client_builder(strategy_config, |cfg, account_cfg, account_auth| {
                 Task::build_client_with_config_and_base_urls(
                     cfg,
                     account_cfg,
+                    account_auth,
                     client_config.clone(),
                     &base_url,
                     &base_url,

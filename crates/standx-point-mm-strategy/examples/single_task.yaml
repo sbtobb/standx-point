@@ -1,0 +1,11 @@
+accounts:
+  - id: "account-1"
+    private_key: "dummy-private-key"
+    chain: "bsc"
+tasks:
+  - id: "task-1"
+    symbol: "BTC-USD"
+    account_id: "account-1"
+    risk:
+      level: "low"
+      budget_usd: "50000"

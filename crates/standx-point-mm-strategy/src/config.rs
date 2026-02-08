@@ -3,6 +3,7 @@
 [OUTPUT]: Parsed strategy configuration
 [POS]:    Configuration layer - task setup
 [UPDATE]: When adding new configuration options
+[UPDATE]: 2026-02-08 Accept wallet private key auth configuration
 */
 
 use serde::{Deserialize, Serialize};
@@ -23,10 +24,15 @@ pub struct StrategyConfig {
 pub struct AccountConfig {
     /// Account identifier referenced by tasks
     pub id: String,
-    /// JWT token for authentication
-    pub jwt_token: String,
-    /// Ed25519 private key for body signing (base64 encoded)
-    pub signing_key: String,
+    /// Wallet private key used for authentication
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key: Option<String>,
+    /// JWT token for authentication (legacy/manual override)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwt_token: Option<String>,
+    /// Ed25519 private key for body signing (base64 encoded, legacy/manual override)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_key: Option<String>,
     /// Chain used for authentication
     #[serde(default = "default_chain")]
     pub chain: Chain,
