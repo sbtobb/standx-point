@@ -478,12 +478,15 @@ impl MarketMakingStrategy {
                         continue;
                     }
 
-                    let mark_price = self.price_rx.borrow().mark_price;
+                    let reference_price = {
+                        let snapshot = self.price_rx.borrow();
+                        self.quote_reference_price(&snapshot)
+                    };
                     if self.live_quotes.is_empty() {
                         // Kick-start quoting when idle.
                         self.refresh_from_latest(executor, tokio::time::Instant::now()).await?;
-                    } else if self.should_refresh_for_price(mark_price, tokio::time::Instant::now()) {
-                        // Re-quote immediately when mark price drift exceeds threshold.
+                    } else if self.should_refresh_for_price(reference_price, tokio::time::Instant::now()) {
+                        // Re-quote immediately when reference price drift exceeds threshold.
                         self.refresh_from_latest(executor, tokio::time::Instant::now()).await?;
                     }
                 }
@@ -511,8 +514,11 @@ impl MarketMakingStrategy {
         // Check fills before placing new quotes.
         self.handle_fills(now).await?;
 
-        let mark_price = self.price_rx.borrow().mark_price;
-        if mark_price <= Decimal::ZERO {
+        let (mark_price, reference_price) = {
+            let snapshot = self.price_rx.borrow();
+            (snapshot.mark_price, self.quote_reference_price(&snapshot))
+        };
+        if reference_price <= Decimal::ZERO {
             self.uptime_tracker.update(now, false);
             return Ok(());
         }
@@ -536,7 +542,7 @@ impl MarketMakingStrategy {
             }
         }
 
-        self.refresh_quotes(executor, now, mark_price).await
+        self.refresh_quotes(executor, now, reference_price).await
     }
 
     fn update_mode_for_timers(&mut self, now: tokio::time::Instant) {
@@ -607,9 +613,9 @@ impl MarketMakingStrategy {
         &mut self,
         executor: &dyn OrderExecutor,
         now: tokio::time::Instant,
-        mark_price: Decimal,
+        reference_price: Decimal,
     ) -> Result<()> {
-        self.base_qty = self.derived_base_qty(mark_price);
+        self.base_qty = self.derived_base_qty(reference_price);
         if self.base_qty <= Decimal::ZERO {
             self.cancel_all_quotes(executor).await;
             self.uptime_tracker.update(now, false);
@@ -624,7 +630,7 @@ impl MarketMakingStrategy {
                     continue;
                 }
                 let slot = QuoteSlot { tier: *tier, side };
-                self.refresh_slot(executor, now, mark_price, slot).await?;
+                self.refresh_slot(executor, now, reference_price, slot).await?;
             }
         }
 
@@ -642,14 +648,14 @@ impl MarketMakingStrategy {
         &mut self,
         executor: &dyn OrderExecutor,
         now: tokio::time::Instant,
-        mark_price: Decimal,
+        reference_price: Decimal,
         slot: QuoteSlot,
     ) -> Result<()> {
         let target_bps = self.target_bps_for_tier(slot.tier);
-        let desired_price = price_at_bps(mark_price, slot.side.to_order_side(), target_bps);
+        let desired_price = price_at_bps(reference_price, slot.side.to_order_side(), target_bps);
         let desired_price = self.align_price_for_order(desired_price);
         let desired_qty = self.desired_qty_for_slot(slot.tier, slot.side, target_bps, now);
-        let capped_qty = self.cap_qty_for_inventory(slot.side, desired_qty, mark_price);
+        let capped_qty = self.cap_qty_for_inventory(slot.side, desired_qty, reference_price);
         let backoff_active = self.is_backoff_active(slot.side, now);
 
         if capped_qty <= Decimal::ZERO || desired_price <= Decimal::ZERO {
@@ -692,7 +698,7 @@ impl MarketMakingStrategy {
                 let wants_reduce = backoff_active && capped_qty < still_live.qty;
                 let (band_min, band_max) = self.quote_band_for_tier(slot.tier);
                 let current_bps =
-                    bps_from_price(mark_price, slot.side.to_order_side(), still_live.price);
+                    bps_from_price(reference_price, slot.side.to_order_side(), still_live.price);
                 let outside_band = current_bps < band_min || current_bps > band_max;
                 let drift_replace = if slot.tier == Tier::L1 {
                     let age = now.saturating_duration_since(still_live.placed_at);
@@ -755,14 +761,14 @@ impl MarketMakingStrategy {
         }
     }
 
-    fn should_refresh_for_price(&self, mark_price: Decimal, now: tokio::time::Instant) -> bool {
-        if mark_price <= Decimal::ZERO {
+    fn should_refresh_for_price(&self, reference_price: Decimal, now: tokio::time::Instant) -> bool {
+        if reference_price <= Decimal::ZERO {
             return false;
         }
 
         for (slot, quote) in self.live_quotes.iter() {
             let (band_min, band_max) = self.quote_band_for_tier(slot.tier);
-            let current_bps = bps_from_price(mark_price, slot.side.to_order_side(), quote.price);
+            let current_bps = bps_from_price(reference_price, slot.side.to_order_side(), quote.price);
             if current_bps < band_min || current_bps > band_max {
                 return true;
             }
@@ -772,7 +778,7 @@ impl MarketMakingStrategy {
                 if age >= L1_MIN_REST {
                     let target_bps = self.target_bps_for_tier(slot.tier);
                     let desired_price =
-                        price_at_bps(mark_price, slot.side.to_order_side(), target_bps);
+                        price_at_bps(reference_price, slot.side.to_order_side(), target_bps);
                     let drift_threshold = self.replace_drift_threshold_bps(slot.tier);
                     if should_replace(quote.price, desired_price, drift_threshold) {
                         return true;
@@ -782,6 +788,16 @@ impl MarketMakingStrategy {
         }
 
         false
+    }
+
+    fn quote_reference_price(&self, snapshot: &SymbolPrice) -> Decimal {
+        if let Some(last_price) = snapshot.last_price {
+            if last_price > Decimal::ZERO {
+                return last_price;
+            }
+        }
+
+        snapshot.mark_price
     }
 
     fn bootstrap_allows_side(&self, side: QuoteSide) -> bool {
