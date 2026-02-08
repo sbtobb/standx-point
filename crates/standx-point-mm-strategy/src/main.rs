@@ -5,11 +5,13 @@
 [UPDATE]: When changing CLI flags, startup flow, or shutdown handling
 [UPDATE]: 2026-02-05 Configure tracing to log to daily files only
 [UPDATE]: 2026-02-08 Remove TUI runtime and keep CLI-only entry
+[UPDATE]: 2026-02-08 Add environment-variable startup path
 */
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use std::fs;
+use std::env;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,7 +25,9 @@ use tracing_subscriber::prelude::*;
 mod cli;
 mod state;
 
+use standx_point_adapter::auth::{EvmWalletSigner, SolanaWalletSigner};
 use standx_point_adapter::http::StandxClient;
+use standx_point_adapter::Chain;
 use standx_point_mm_strategy::{MarketDataHub, StrategyConfig, TaskManager};
 
 #[derive(Parser, Debug)]
@@ -37,6 +41,8 @@ struct Cli {
     command: Option<Commands>,
     #[arg(short, long, value_name = "PATH")]
     config: Option<PathBuf>,
+    #[arg(long, help = "Load configuration from environment variables")]
+    env: bool,
     #[arg(short, long, value_name = "LEVEL", default_value = "info")]
     log_level: String,
     #[arg(long)]
@@ -67,7 +73,7 @@ async fn main() -> Result<()> {
 
     init_tracing(&args.log_level)?;
 
-    run_cli_mode(args.config, args.dry_run).await
+    run_cli_mode(args.config, args.env, args.dry_run).await
 }
 
 async fn run_migrations() -> Result<()> {
@@ -85,7 +91,7 @@ async fn run_migrations() -> Result<()> {
     Ok(())
 }
 
-async fn run_cli_mode(config_path: Option<PathBuf>, dry_run: bool) -> Result<()> {
+async fn run_cli_mode(config_path: Option<PathBuf>, env_mode: bool, dry_run: bool) -> Result<()> {
     if let Some(path) = &config_path {
         info!(
             config_path = %path.display(),
@@ -102,10 +108,22 @@ async fn run_cli_mode(config_path: Option<PathBuf>, dry_run: bool) -> Result<()>
             info!(task_count = config.tasks.len(), "configuration loaded");
             config
         }
-        None => match cli::interactive::run_interactive().await? {
-            Some(config) => config,
-            None => return Ok(()),
-        },
+        None => {
+            if env_mode {
+                match load_env_config()? {
+                    Some(config) => {
+                        info!(task_count = config.tasks.len(), "configuration loaded from env");
+                        config
+                    }
+                    None => return Ok(()),
+                }
+            } else {
+                match cli::interactive::run_interactive().await? {
+                    Some(config) => config,
+                    None => return Ok(()),
+                }
+            }
+        }
     };
 
     validate_strategy_config(&config)?;
@@ -189,11 +207,28 @@ fn validate_strategy_config(config: &StrategyConfig) -> Result<()> {
         if account.id.trim().is_empty() {
             return Err(anyhow!("account id cannot be empty"));
         }
-        if account.jwt_token.trim().is_empty() {
-            return Err(anyhow!("account jwt_token cannot be empty"));
+        let private_key = account
+            .private_key
+            .as_deref()
+            .unwrap_or("")
+            .trim();
+        let jwt_token = account.jwt_token.as_deref().unwrap_or("").trim();
+        let signing_key = account.signing_key.as_deref().unwrap_or("").trim();
+
+        let has_private_key = !private_key.is_empty();
+        let has_jwt = !jwt_token.is_empty();
+        let has_signing = !signing_key.is_empty();
+
+        if !has_private_key && (!has_jwt || !has_signing) {
+            return Err(anyhow!(
+                "account must provide private_key or jwt_token+signing_key"
+            ));
         }
-        if account.signing_key.trim().is_empty() {
-            return Err(anyhow!("account signing_key cannot be empty"));
+        if has_jwt && !has_signing {
+            return Err(anyhow!("account signing_key cannot be empty when jwt_token is set"));
+        }
+        if has_signing && !has_jwt {
+            return Err(anyhow!("account jwt_token cannot be empty when signing_key is set"));
         }
         if !seen_accounts.insert(account.id.clone()) {
             return Err(anyhow!("duplicate account id in config: {}", account.id));
@@ -226,6 +261,93 @@ fn validate_strategy_config(config: &StrategyConfig) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn load_env_config() -> Result<Option<StrategyConfig>> {
+    let private_key = env::var("STANDX_MM_PRIVATE_KEY").ok();
+    let symbol = env::var("STANDX_MM_SYMBOL").ok();
+    let risk_level = env::var("STANDX_MM_RISK_LEVEL").ok();
+    let budget_usd = env::var("STANDX_MM_BUDGET_USD").ok();
+
+    let any_set = private_key.is_some() || symbol.is_some() || risk_level.is_some() || budget_usd.is_some();
+    if !any_set {
+        return Ok(None);
+    }
+
+    let private_key = private_key.ok_or_else(|| anyhow!("STANDX_MM_PRIVATE_KEY is required"))?;
+    let symbol = symbol.ok_or_else(|| anyhow!("STANDX_MM_SYMBOL is required"))?;
+    let risk_level = risk_level.ok_or_else(|| anyhow!("STANDX_MM_RISK_LEVEL is required"))?;
+    let budget_usd = budget_usd.ok_or_else(|| anyhow!("STANDX_MM_BUDGET_USD is required"))?;
+
+    let chain = parse_chain(env::var("STANDX_MM_CHAIN").ok())?;
+    let wallet_address = derive_wallet_address(&private_key, chain)?;
+
+    let account_id = env::var("STANDX_MM_ACCOUNT_ID").unwrap_or(wallet_address);
+    let task_id = env::var("STANDX_MM_TASK_ID").unwrap_or_else(|_| format!(
+        "task-{}",
+        slugify_symbol(&symbol)
+    ));
+
+    let config = StrategyConfig {
+        accounts: vec![standx_point_mm_strategy::config::AccountConfig {
+            id: account_id.clone(),
+            private_key: Some(private_key),
+            jwt_token: None,
+            signing_key: None,
+            chain,
+        }],
+        tasks: vec![standx_point_mm_strategy::config::TaskConfig {
+            id: task_id,
+            symbol,
+            account_id,
+            risk: standx_point_mm_strategy::config::RiskConfig {
+                level: risk_level,
+                budget_usd,
+            },
+        }],
+    };
+
+    Ok(Some(config))
+}
+
+fn parse_chain(raw: Option<String>) -> Result<Chain> {
+    let raw = raw.unwrap_or_else(|| "bsc".to_string());
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "bsc" => Ok(Chain::Bsc),
+        "solana" => Ok(Chain::Solana),
+        other => Err(anyhow!("invalid STANDX_MM_CHAIN: {other} (use bsc or solana)")),
+    }
+}
+
+fn derive_wallet_address(private_key: &str, chain: Chain) -> Result<String> {
+    match chain {
+        Chain::Bsc => {
+            let wallet = EvmWalletSigner::new(private_key)
+                .map_err(|err| anyhow!("invalid EVM private key: {err}"))?;
+            Ok(wallet.address().to_string())
+        }
+        Chain::Solana => {
+            let wallet = SolanaWalletSigner::new(private_key)
+                .map_err(|err| anyhow!("invalid Solana private key: {err}"))?;
+            Ok(wallet.address().to_string())
+        }
+    }
+}
+
+fn slugify_symbol(symbol: &str) -> String {
+    let mut slug = String::with_capacity(symbol.len());
+    for ch in symbol.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if ch == '-' || ch == '_' {
+            slug.push('-');
+        }
+    }
+    if slug.is_empty() {
+        "task".to_string()
+    } else {
+        slug
+    }
 }
 
 fn log_strategy_config(config: &StrategyConfig) {

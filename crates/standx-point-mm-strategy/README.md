@@ -33,15 +33,23 @@
 
 ## Quick Start
 
-### 1. Configuration
+### 1. Build the Binary
 
-Create a configuration file (see `examples/single_task.yaml`):
+```bash
+# Build in release mode (recommended for production)
+cargo build -p standx-point-mm-strategy --release
+
+# Binary will be at: ./target/release/standx-point-mm-strategy
+```
+
+### 2. Create Configuration File
+
+Create a YAML configuration file (see `examples/single_task.yaml`):
 
 ```yaml
 accounts:
   - id: "account-1"
-    jwt_token: "your-jwt-token"
-    signing_key: "your-ed25519-key"
+    private_key: "your-wallet-private-key"
     chain: "bsc"
 tasks:
   - id: "btc-mm"
@@ -52,93 +60,280 @@ tasks:
       budget_usd: "50000"
 ```
 
-### 2. Run the Bot
+### 3. One-Click Start
 
-#### CLI 模式
-使用 `--config` 指定配置文件，适合服务器长期运行。
+#### Quick Start (Development/Test)
+
 ```bash
-# Run with config
-./target/release/standx-point-mm-strategy --config config.yaml
-
-# Dry run (validate config without trading)
-./target/release/standx-point-mm-strategy --config config.yaml --dry-run
+# Run directly with cargo (development only)
+cargo run -p standx-point-mm-strategy -- --config path/to/config.yaml
 ```
 
-### 3. Monitor
+#### Environment Variable Startup
 
-The bot uses `tracing` for structured logging:
+Use `--env` to load configuration from environment variables:
 
 ```bash
-# Set log level
-RUST_LOG=info ./target/release/standx-point-mm-strategy --config config.yaml
+export STANDX_MM_PRIVATE_KEY="your-wallet-private-key"
+export STANDX_MM_SYMBOL="BTC-USD"
+export STANDX_MM_RISK_LEVEL="low"
+export STANDX_MM_BUDGET_USD="50000"
+# Optional:
+# export STANDX_MM_CHAIN="bsc"
+# export STANDX_MM_ACCOUNT_ID="account-1"
+# export STANDX_MM_TASK_ID="task-btc"
+
+standx-point-mm-strategy --env --dry-run
+```
+
+#### Production Deployment
+
+```bash
+# 1. Build release binary
+cargo build -p standx-point-mm-strategy --release
+
+# 2. Copy binary to deployment location
+cp ./target/release/standx-point-mm-strategy /usr/local/bin/
+
+# 3. Create config directory
+mkdir -p /etc/standx-point-mm-strategy
+
+# 4. Copy configuration
+cp config.yaml /etc/standx-point-mm-strategy/
+
+# 5. Create systemd service (optional but recommended)
+# See "Production Deployment" section below
+
+# 6. Start the service
+standx-point-mm-strategy --config /etc/standx-point-mm-strategy/config.yaml
+```
+
+### 4. Verify Startup
+
+```bash
+# Validate configuration without trading (dry run)
+standx-point-mm-strategy --config config.yaml --dry-run
+
+# Start with detailed logging
+RUST_LOG=debug standx-point-mm-strategy --config config.yaml
+
+# View logs
+tail -f logs/standx-point-mm-strategy.log
+```
+
+## CLI Options
+
+```
+standx-point-mm-strategy [OPTIONS] [--config <PATH>] [--env] [--dry-run]
+
+Options:
+  -c, --config <PATH>     Path to YAML configuration file
+      --env              Load configuration from environment variables
+      --dry-run          Validate configuration without trading
+  -l, --log-level <LEVEL>  Log level: trace, debug, info, warn, error [default: info]
+  -h, --help            Print help
+  -V, --version         Print version
+
+Subcommands:
+  init     Initialize a new configuration file
+  migrate  Migrate existing state
 ```
 
 ## Configuration Reference
 
-### Task Fields
+### Configuration File Structure
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | String | Unique task identifier |
-| `symbol` | String | Trading pair (e.g., "BTC-USD") |
-| `account_id` | String | Account identifier from `accounts` |
-| `risk.level` | String | "low", "medium", "high", or "xhigh" |
-| `risk.budget_usd` | String | Budget in USD used for quoting |
+```yaml
+# Account credentials (can have multiple accounts)
+accounts:
+  - id: "main-account"                 # Unique account identifier
+    private_key: "0x..."               # Wallet private key
+    # Optional legacy overrides:
+    # jwt_token: "eyJ..."
+    # signing_key: "base64-encoded-key"
+    chain: "bsc"                       # Chain: "bsc" or "solana"
+
+# Trading tasks (can have multiple tasks)
+tasks:
+  - id: "btc-mm"                       # Unique task identifier
+    symbol: "BTC-USD"                  # Trading pair
+    account_id: "main-account"          # Which account to use
+    risk:
+      level: "low"                     # Risk level: low/medium/high/xhigh
+      budget_usd: "100000"             # Budget in USD for quoting
+```
 
 ### Account Fields
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | String | Account identifier referenced by tasks |
-| `jwt_token` | String | JWT authentication token |
-| `signing_key` | String | Ed25519 private key (base64) |
-| `chain` | String | "bsc" or "solana" |
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | String | Yes | Unique account identifier, referenced by tasks |
+| `private_key` | String | Yes | Wallet private key for authentication |
+| `jwt_token` | String | No | JWT authentication token from StandX (legacy override) |
+| `signing_key` | String | No | Ed25519 private key for request signing (base64, legacy override) |
+| `chain` | String | Yes | Blockchain: `"bsc"` or `"solana"` |
 
-### Derived Parameters
+### Task Fields
 
-- `tiers` 由 `risk.level` 派生（low=5, medium=3, high=2, xhigh=1）。
-- `base_qty` is derived from `risk.budget_usd` and current mark price using a risk-based utilization (10%/20%/30%).
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | String | Yes | Unique task identifier |
+| `symbol` | String | Yes | Trading pair (e.g., "BTC-USD") |
+| `account_id` | String | Yes | Account identifier from `accounts` section |
+| `risk.level` | String | Yes | Risk level: `"low"`, `"medium"`, `"high"`, or `"xhigh"` |
+| `risk.budget_usd` | String | Yes | Budget in USD for quoting (名义金额) |
 
-### Risk Levels
+### Risk Level Details
 
-- **Low**: 5 tiers, 5-30 bps band
-- **Medium**: 3 tiers, 5-15 bps band
-- **High**: 2 tiers, 5-10 bps band
-- **XHigh**: 1 tier, 5-8 bps band
+| Level | Tiers | Band (bps) | Description |
+|-------|-------|------------|-------------|
+| **Low** | 5 | 5-30 | 最保守，适合初学者 |
+| **Medium** | 3 | 5-15 | 中等风险 |
+| **High** | 2 | 5-10 | 激进策略 |
+| **XHigh** | 1 | 5-8 | 最高风险 |
 
-## Strategy Details
+### Budget Sizing Calculation
 
-### Market Making Logic
+The `budget_usd` represents **双边挂单名义金额总和** (total notional value for both sides):
 
-1. **Price Monitoring**: Watches mark price via WebSocket
-2. **Quote Placement**: Places bilateral PostOnly orders at configured bps offset
-3. **Tier Management**: Maintains L1 (5-10bps), L2 (10-15bps), L3 (15-20bps) ladders
-4. **Price Drift**: Cancels and replaces orders when price moves >1 bps
-5. **Partial Fills**: Re-quotes remaining quantity
-6. **Full Fills**: Enters cooldown period to avoid immediate re-entry
+```
+单边预算 = budget_usd / 2
+基础数量 = base_qty = per_side_budget / mark_price / total_weight
+分层数量 = tier_qty = base_qty * tier_weight * band_multiplier
+```
 
-### Uptime Tracking
+Final order quantity is adjusted by:
+- `qty_tick_decimals` alignment
+- `min_order_qty` threshold (values below are zeroed)
 
-Tracks active quoting time for StandX monthly token rewards:
-- Requires bilateral quotes within 10 bps
-- Minimum 30 minutes per hour
-- 5M token pool distributed monthly
+### Example Configurations
 
-## Risk Management
+#### Single Task (Low Risk)
 
-### Guards
+```yaml
+accounts:
+  - id: "main"
+    private_key: "0x..."
+    chain: "bsc"
+tasks:
+  - id: "btc-mm"
+    symbol: "BTC-USD"
+    account_id: "main"
+    risk:
+      level: "low"
+      budget_usd: "50000"
+```
 
-- **Price Jump**: Pauses trading if price changes > threshold bps/second
-- **Depth Monitoring**: Pauses if order book depth drops below threshold
-- **Position Limit**: Stops new orders if position exceeds limit
-- **Fill Rate**: Pauses if fills exceed threshold per minute
-- **Spread Monitoring**: Avoids quoting when spread > threshold
+#### Multiple Tasks (Different Risk Levels)
 
-### States
+```yaml
+accounts:
+  - id: "main"
+    private_key: "0x..."
+    chain: "bsc"
+tasks:
+  - id: "btc-low"
+    symbol: "BTC-USD"
+    account_id: "main"
+    risk:
+      level: "low"
+      budget_usd: "100000"
+  - id: "btc-high"
+    symbol: "BTC-USD"
+    account_id: "main"
+    risk:
+      level: "high"
+      budget_usd: "50000"
+  - id: "eth-mm"
+    symbol: "ETH-USD"
+    account_id: "main"
+    risk:
+      level: "medium"
+      budget_usd: "75000"
+```
 
-- `Safe`: Normal operation
-- `Caution`: Some metrics elevated (logs warnings)
-- `Halt`: Trading paused (notifies tasks)
+## Production Deployment
+
+### Systemd Service
+
+Create `/etc/systemd/system/standx-point-mm-strategy.service`:
+
+```ini
+[Unit]
+Description=StandX Point MM Strategy Bot
+After=network.target
+
+[Service]
+Type=simple
+User=standx
+Group=standx
+WorkingDirectory=/etc/standx-point-mm-strategy
+ExecStart=/usr/local/bin/standx-point-mm-strategy --config /etc/standx-point-mm-strategy/config.yaml
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/standx-point-mm-strategy
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable standx-point-mm-strategy
+sudo systemctl start standx-point-mm-strategy
+
+# Check status
+sudo systemctl status standx-point-mm-strategy
+
+# View logs
+sudo journalctl -u standx-point-mm-strategy -f
+```
+
+## Monitoring
+
+### Log Files
+
+Logs are written to `logs/standx-point-mm-strategy.log` with daily rotation:
+
+```bash
+# View current log
+tail -f logs/standx-point-mm-strategy.log
+
+# View specific date
+tail -f logs/standx-point-mm-strategy.log.2026-02-08
+```
+
+### Log Levels
+
+| Level | Use Case |
+|-------|----------|
+| `trace` | Very detailed debugging |
+| `debug` | Development debugging |
+| `info` | Normal operation (default) |
+| `warn` | Warnings and elevated risk |
+| `error` | Errors requiring attention |
+
+### Health Checks
+
+```bash
+# Check if process is running
+pgrep -f standx-point-mm-strategy
+
+# Monitor resource usage
+htop -p $(pgrep -f standx-point-mm-strategy)
+
+# Check network connections
+netstat -tulpn | grep standx-point
+```
 
 ## Development
 

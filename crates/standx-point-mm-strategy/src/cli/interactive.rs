@@ -3,6 +3,7 @@
 [OUTPUT]: StrategyConfig for selected tasks or storage updates
 [POS]:    CLI interactive flow
 [UPDATE]: 2026-02-06 Add interactive CLI task/account management
+[UPDATE]: 2026-02-08 Build config using wallet private key auth
 */
 
 use anyhow::{Context, Result, anyhow};
@@ -516,8 +517,9 @@ async fn build_strategy_config(storage: &Storage, tasks: &[Task]) -> Result<Stra
         .values()
         .map(|account| AccountConfig {
             id: account.id.clone(),
-            jwt_token: account.jwt_token.clone(),
-            signing_key: account.signing_key.clone(),
+            private_key: non_empty(&account.private_key),
+            jwt_token: non_empty(&account.jwt_token),
+            signing_key: non_empty(&account.signing_key),
             chain: account.chain.unwrap_or(Chain::Bsc),
         })
         .collect();
@@ -614,5 +616,14 @@ fn print_strategy_summary(config: &StrategyConfig) {
             "- {} | {} | account={} | risk={} | budget_usd={}",
             task.id, task.symbol, task.account_id, task.risk.level, task.risk.budget_usd
         );
+    }
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }

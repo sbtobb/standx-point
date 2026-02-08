@@ -3,6 +3,7 @@
 [OUTPUT]: Generated YAML configuration file
 [POS]:    CLI initialization layer
 [UPDATE]: When StrategyConfig schema changes
+[UPDATE]: 2026-02-08 Collect wallet private key for auth
 */
 
 use anyhow::{Context, Result};
@@ -40,12 +41,20 @@ pub fn run_init(output: PathBuf) -> Result<()> {
         .default("account-1".to_string())
         .interact_text()?;
 
-    let jwt_token: String = Input::with_theme(&theme)
-        .with_prompt("JWT Token")
-        .interact_text()?;
+    let chains = vec!["bsc", "solana"];
+    let chain_index = Select::with_theme(&theme)
+        .with_prompt("Chain")
+        .items(&chains)
+        .default(0)
+        .interact()?;
+    let chain = if chain_index == 0 {
+        standx_point_adapter::Chain::Bsc
+    } else {
+        standx_point_adapter::Chain::Solana
+    };
 
-    let signing_key: String = Input::with_theme(&theme)
-        .with_prompt("Signing Key (Base64 Ed25519 private key)")
+    let private_key: String = Input::with_theme(&theme)
+        .with_prompt("Wallet Private Key")
         .interact_text()?;
 
     println!("\n{}", style("--- Risk Management ---").bold());
@@ -65,9 +74,10 @@ pub fn run_init(output: PathBuf) -> Result<()> {
     let config = StrategyConfig {
         accounts: vec![AccountConfig {
             id: account_id.clone(),
-            jwt_token,
-            signing_key,
-            chain: standx_point_adapter::Chain::Bsc,
+            private_key: Some(private_key),
+            jwt_token: None,
+            signing_key: None,
+            chain,
         }],
         tasks: vec![TaskConfig {
             id,
