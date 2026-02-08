@@ -26,7 +26,7 @@ mod cli;
 mod state;
 
 use standx_point_adapter::Chain;
-use standx_point_adapter::auth::{EvmWalletSigner, SolanaWalletSigner, WalletSigner};
+use standx_point_adapter::auth::{EvmWalletSigner, SolanaWalletSigner};
 use standx_point_adapter::http::StandxClient;
 use standx_point_mm_strategy::{MarketDataHub, StrategyConfig, TaskManager};
 
@@ -328,12 +328,12 @@ fn derive_wallet_address(private_key: &str, chain: Chain) -> Result<String> {
         Chain::Bsc => {
             let wallet = EvmWalletSigner::new(private_key)
                 .map_err(|err| anyhow!("invalid EVM private key: {err}"))?;
-            Ok(wallet.address().to_string())
+            Ok(standx_point_adapter::auth::WalletSigner::address(&wallet).to_string())
         }
         Chain::Solana => {
             let wallet = SolanaWalletSigner::new(private_key)
                 .map_err(|err| anyhow!("invalid Solana private key: {err}"))?;
-            Ok(wallet.address().to_string())
+            Ok(standx_point_adapter::auth::WalletSigner::address(&wallet).to_string())
         }
     }
 }
