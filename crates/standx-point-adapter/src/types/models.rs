@@ -3,6 +3,7 @@
 [OUTPUT]: Typed Rust structs with serialization support
 [POS]:    Data layer - type definitions for API communication
 [UPDATE]: When API schema changes or new types added
+[UPDATE]: 2026-02-08 allow missing Order.margin in deserialization
 */
 
 use rust_decimal::Decimal;
@@ -62,7 +63,11 @@ pub struct Order {
     #[serde(with = "rust_decimal::serde::str")]
     pub leverage: Decimal,
     pub liq_id: i64,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub margin: Decimal,
     pub order_type: OrderType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -362,5 +367,38 @@ mod serde_helpers {
         S: Serializer,
     {
         serializer.serialize_str(&value.to_string())
+    }
+
+    #[test]
+    fn order_deserializes_without_margin() {
+        let value = json!({
+            "avail_locked": "1",
+            "cl_ord_id": "cl-1",
+            "closed_block": 0,
+            "created_at": "0",
+            "created_block": 0,
+            "fill_avg_price": "0",
+            "fill_qty": "0",
+            "id": 1,
+            "leverage": "1",
+            "liq_id": 0,
+            "order_type": "limit",
+            "position_id": 0,
+            "price": "100",
+            "qty": "1",
+            "reduce_only": false,
+            "remark": "",
+            "side": "buy",
+            "source": "test",
+            "status": "open",
+            "symbol": "BTC-USD",
+            "time_in_force": "gtc",
+            "updated_at": "0",
+            "user": "user"
+        });
+
+        let order: Order = serde_json::from_value(value).expect("order should deserialize");
+
+        assert_eq!(order.margin, Decimal::ZERO);
     }
 }

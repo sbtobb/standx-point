@@ -3,6 +3,7 @@
 [OUTPUT]: Configured reqwest client ready for API calls
 [POS]:    HTTP layer - core client implementation
 [UPDATE]: When adding connection options or changing client behavior
+[UPDATE]: 2026-02-08 include raw body on JSON parse failures
 */
 
 use super::error::{Result as HttpResult, StandxError};
@@ -179,7 +180,11 @@ impl StandxClient {
                 let body = response.text().await?;
                 
                 if status.is_success() {
-                    return Ok(serde_json::from_str::<T>(&body)?);
+                    return serde_json::from_str::<T>(&body).map_err(|err| {
+                        StandxError::InvalidResponse(format!(
+                            "deserialize error: {err}; body={body}"
+                        ))
+                    });
                 }
                 
                 if status == reqwest::StatusCode::UNAUTHORIZED {
