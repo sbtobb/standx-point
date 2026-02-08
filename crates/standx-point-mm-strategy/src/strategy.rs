@@ -540,7 +540,9 @@ impl MarketMakingStrategy {
     }
 
     fn update_mode_for_timers(&mut self, now: tokio::time::Instant) {
-        if let Some(until) = self.survival_until && now >= until {
+        if let Some(until) = self.survival_until
+            && now >= until
+        {
             self.survival_until = None;
             self.mode = self.preferred_mode;
         }
@@ -689,11 +691,8 @@ impl MarketMakingStrategy {
             if let Some(still_live) = self.live_quotes.get(&slot) {
                 let wants_reduce = backoff_active && capped_qty < still_live.qty;
                 let (band_min, band_max) = self.quote_band_for_tier(slot.tier);
-                let current_bps = bps_from_price(
-                    mark_price,
-                    slot.side.to_order_side(),
-                    still_live.price,
-                );
+                let current_bps =
+                    bps_from_price(mark_price, slot.side.to_order_side(), still_live.price);
                 let outside_band = current_bps < band_min || current_bps > band_max;
                 let drift_replace = if slot.tier == Tier::L1 {
                     let age = now.saturating_duration_since(still_live.placed_at);
@@ -717,9 +716,10 @@ impl MarketMakingStrategy {
                 } else {
                     // Keep current quote; update qty bookkeeping when partially filled.
                     if effective_qty != still_live.qty
-                        && let Some(q) = self.live_quotes.get_mut(&slot) {
-                            q.qty = effective_qty;
-                        }
+                        && let Some(q) = self.live_quotes.get_mut(&slot)
+                    {
+                        q.qty = effective_qty;
+                    }
                 }
                 return Ok(());
             }
@@ -762,11 +762,7 @@ impl MarketMakingStrategy {
 
         for (slot, quote) in self.live_quotes.iter() {
             let (band_min, band_max) = self.quote_band_for_tier(slot.tier);
-            let current_bps = bps_from_price(
-                mark_price,
-                slot.side.to_order_side(),
-                quote.price,
-            );
+            let current_bps = bps_from_price(mark_price, slot.side.to_order_side(), quote.price);
             if current_bps < band_min || current_bps > band_max {
                 return true;
             }
@@ -1355,12 +1351,7 @@ mod tests {
     #[test]
     fn strategy_aligns_qty_to_tick_and_bounds() {
         let mut strategy = MarketMakingStrategy::new();
-        strategy.set_symbol_constraints(
-            Some(2),
-            Some(2),
-            Some(dec("0.05")),
-            Some(dec("1.00")),
-        );
+        strategy.set_symbol_constraints(Some(2), Some(2), Some(dec("0.05")), Some(dec("1.00")));
 
         let rounded = strategy.align_qty_for_order(dec("0.1234"));
         assert_eq!(rounded, dec("0.12"));

@@ -15,6 +15,7 @@ pub async fn setup_mock_server() -> MockServer {
 }
 
 /// Generate a deterministic Ed25519 keypair for testing
+#[allow(dead_code)]
 pub fn generate_test_keypair() -> ([u8; 32], [u8; 32]) {
     let seed = [1u8; 32];
     (seed, seed)

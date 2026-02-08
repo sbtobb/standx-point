@@ -22,13 +22,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // This directory will store Ed25519 session keys for each wallet address
     let client = StandxClient::new()?;
     let auth = AuthManager::new_with_key_dir(client, "./.standx-config/keys");
-    
+
     println!("=== StandX Persistent Auth Example ===");
-    
+
     // Step 2: List accounts that already have stored session keys
     let accounts = auth.list_stored_accounts();
     println!("Stored accounts: {:?}", accounts);
-    
+
     if accounts.is_empty() {
         println!("No stored accounts found in ./.standx-config/keys");
     } else {
@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  - Found session key for: {}", addr);
         }
     }
-    
+
     // Step 3: Demonstrate how authentication would be performed
     // In real usage, you would call:
     /*
@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         standx_point_adapter::types::Chain::Bsc
     ).await?;
     */
-    
+
     println!("\nExample complete - see comments for real usage");
     Ok(())
 }

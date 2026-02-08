@@ -264,7 +264,9 @@ impl OrderTracker {
                     cl_ord_id: cl_ord_id.to_string(),
                 })?;
 
-        if let Some(existing_id) = tracked.order_id && existing_id != order_id {
+        if let Some(existing_id) = tracked.order_id
+            && existing_id != order_id
+        {
             return Err(OrderTrackerError::OrderIdConflict {
                 cl_ord_id: cl_ord_id.to_string(),
                 existing_order_id: existing_id,
@@ -484,11 +486,12 @@ impl OrderTracker {
 
         for (cl_ord_id, tracked) in self.orders.iter_mut() {
             if let OrderState::Sent { sent_at, .. } = tracked.state
-                && now.saturating_duration_since(sent_at) > self.timeout {
-                    tracked.state = OrderState::Failed {
-                        error: "send_timeout".to_string(),
-                    };
-                    timed_out.push(cl_ord_id.clone());
+                && now.saturating_duration_since(sent_at) > self.timeout
+            {
+                tracked.state = OrderState::Failed {
+                    error: "send_timeout".to_string(),
+                };
+                timed_out.push(cl_ord_id.clone());
             }
         }
 
