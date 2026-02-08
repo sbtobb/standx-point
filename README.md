@@ -5,7 +5,7 @@ StandX Point 是一个以 Rust 为核心的做市策略工作区，涵盖协议�
 ## Workspace 结构
 
 - **crates/standx-point-adapter**: StandX 协议适配层（Auth/HTTP/WebSocket）。
-- **crates/standx-point-mm-strategy**: 做市策略机器人（多账户、共享行情流、风险管理、TUI/CLI）。
+- **crates/standx-point-mm-strategy**: 做市策略机器人（多账户、共享行情流、风险管理、CLI）。
 
 ## 快速开始
 
@@ -23,12 +23,6 @@ cargo build --workspace
 
 ```bash
 cargo run -p standx-point-mm-strategy
-```
-
-#### TUI 模式（交互式）
-
-```bash
-cargo run -p standx-point-mm-strategy -- --tui
 ```
 
 ## 开发说明

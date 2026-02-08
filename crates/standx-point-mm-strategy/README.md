@@ -4,7 +4,6 @@
 
 ## Features
 
-- **TUI Management**: Interactive terminal interface for managing accounts and tasks
 - **Multi-Account Support**: Run multiple trading tasks simultaneously with isolated state
 - **Shared Market Data**: Single WebSocket connection feeds all tasks via `tokio::sync::watch` channels
 - **Low 策略**: 5 层、5-30 bps 区间做市
@@ -55,14 +54,6 @@ tasks:
 
 ### 2. Run the Bot
 
-Bot 支持两种运行模式：交互式 TUI 模式和传统 CLI 模式。
-
-#### TUI 模式 (推荐)
-直接运行程序而不带 `--config` 参数即可进入交互式 TUI 界面。
-```bash
-./target/release/standx-point-mm-strategy
-```
-
 #### CLI 模式
 使用 `--config` 指定配置文件，适合服务器长期运行。
 ```bash
@@ -72,46 +63,6 @@ Bot 支持两种运行模式：交互式 TUI 模式和传统 CLI 模式。
 # Dry run (validate config without trading)
 ./target/release/standx-point-mm-strategy --config config.yaml --dry-run
 ```
-
-## Using the TUI
-
-TUI 提供了一个直观的界面来管理交易账户和做市任务。
-
-### 布局说明
-- **Status Bar (顶部)**: 显示当前模式（Accounts/Tasks）以及系统状态消息。
-- **Sidebar (左侧)**: 显示账户或任务列表，支持通过快捷键切换。
-- **Detail View (右侧)**: 显示选中项的详细信息、风险参数或运行状态。
-- **Bottom Menu (底部)**: 常用快捷键提示。
-
-### 快捷键
-| 键位 | 动作 |
-|-------|------|
-| `F1` | 显示/关闭帮助弹层 |
-| `F2` | 切换到账户管理 (Accounts) |
-| `F3` | 切换到任务管理 (Tasks) |
-| `F4` | 显示/隐藏敏感凭证 (JWT/Key) |
-| `j / ↓` | 向下移动选择 |
-| `k / ↑` | 向上移动选择 |
-| `h / ←` | 聚焦侧边栏 |
-| `l / →` | 聚焦详情视图 |
-| `Tab` | 循环切换焦点 |
-| `Enter` | 确认/选择 |
-| `n` | 创建新项目 (Account/Task) |
-| `e` | 编辑选中项目 |
-| `d` | 删除选中项目 |
-| `s` | 启动选中任务 |
-| `x` | 停止选中任务 |
-| `q / Esc` | 退出程序 |
-
-### 操作流程
-1. **创建账户**: 按 `F2` 进入账户界面，按 `n` 打开表单，输入 `JWT Token` 和 `Signing Key`。
-2. **创建任务**: 按 `F3` 进入任务界面，按 `n` 创建任务。需选择已关联的账户，并指定 `Symbol` (如 `BTC-USD`)。
-3. **启动策略**: 在任务列表中选中任务，按 `s` 启动。此时 Status Bar 会实时反映任务的运行状态。
-
-### 故障排除
-- **终端尺寸**: TUI 要求最小尺寸为 `80x24`。若终端过小，界面会显示覆盖提示。
-- **无价格更新**: 检查网络连接。程序启动时会尝试连接 WebSocket 订阅市场数据。
-- **测试模式**: 开发者可设置环境变量 `STANDX_TUI_TEST_EXIT_AFTER_TICKS=N` 让程序在运行 N 个 tick 后自动退出。
 
 ### 3. Monitor
 
