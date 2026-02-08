@@ -7,8 +7,8 @@
 
 use super::error::{Result as HttpResult, StandxError};
 use super::signature::{
-    BodySignature, RequestSigner, DEFAULT_SIGNATURE_VERSION, HEADER_REQUEST_ID,
-    HEADER_REQUEST_SIGNATURE, HEADER_REQUEST_TIMESTAMP, HEADER_REQUEST_VERSION,
+    BodySignature, DEFAULT_SIGNATURE_VERSION, HEADER_REQUEST_ID, HEADER_REQUEST_SIGNATURE,
+    HEADER_REQUEST_TIMESTAMP, HEADER_REQUEST_VERSION, RequestSigner,
 };
 use crate::auth::Ed25519Signer;
 use crate::types::Chain;
@@ -168,24 +168,31 @@ impl StandxClient {
         Ok((builder, signature))
     }
 
-    pub(crate) async fn send_json<T: DeserializeOwned>(&self, builder: RequestBuilder) -> HttpResult<T> {
+    pub(crate) async fn send_json<T: DeserializeOwned>(
+        &self,
+        builder: RequestBuilder,
+    ) -> HttpResult<T> {
         const MAX_RETRIES: usize = 3;
         let mut retries = 0;
-        
+
         loop {
             let result = async {
-                let response = builder.try_clone().ok_or_else(|| StandxError::Internal("Builder cannot be cloned".to_string()))?.send().await?;
+                let response = builder
+                    .try_clone()
+                    .ok_or_else(|| StandxError::Internal("Builder cannot be cloned".to_string()))?
+                    .send()
+                    .await?;
                 let status = response.status();
                 let body = response.text().await?;
-                
+
                 if status.is_success() {
                     return Ok(serde_json::from_str::<T>(&body)?);
                 }
-                
+
                 if status == reqwest::StatusCode::UNAUTHORIZED {
                     return Err(StandxError::TokenExpired);
                 }
-                
+
                 let message = match serde_json::from_str::<JsonValue>(&body) {
                     Ok(JsonValue::Object(map)) => map
                         .get("message")
@@ -194,16 +201,17 @@ impl StandxClient {
                         .unwrap_or_else(|| body.clone()),
                     _ => body.clone(),
                 };
-                
+
                 if status == reqwest::StatusCode::FORBIDDEN
                     && message.to_ascii_lowercase().contains("signature")
                 {
                     return Err(StandxError::InvalidSignature);
                 }
-                
+
                 Err(StandxError::api_error(status, message))
-            }.await;
-            
+            }
+            .await;
+
             match result {
                 Ok(v) => return Ok(v),
                 Err(e) => {

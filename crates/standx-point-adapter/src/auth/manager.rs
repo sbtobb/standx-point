@@ -8,7 +8,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use base64::{engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD}, Engine as _};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
+};
 use reqwest::Method;
 use serde::Deserialize;
 
@@ -176,9 +179,9 @@ impl AuthManager {
         let signature = wallet.sign_message(&message).await?;
 
         // Step 4: Login
-        let login_response =
-            self.login(chain, &signature, &signin_data.signed_data, expires_seconds)
-                .await?;
+        let login_response = self
+            .login(chain, &signature, &signin_data.signed_data, expires_seconds)
+            .await?;
 
         // Step 5: Store JWT
         self.jwt_manager.set_token(
@@ -262,17 +265,16 @@ fn verify_wallet_address(chain: Chain, expected: &str, derived: &str) -> Result<
 
 fn extract_message_from_signed_data(signed_data: &str) -> Result<String> {
     let signed_data = signed_data.trim();
-    let payload_b64 = signed_data.split('.').nth(1).ok_or_else(|| {
-        StandxError::InvalidResponse("signedData is not a valid JWT".to_string())
-    })?;
+    let payload_b64 = signed_data
+        .split('.')
+        .nth(1)
+        .ok_or_else(|| StandxError::InvalidResponse("signedData is not a valid JWT".to_string()))?;
 
     let payload_bytes = URL_SAFE_NO_PAD
         .decode(payload_b64)
         .or_else(|_| URL_SAFE.decode(payload_b64))
         .map_err(|e| {
-            StandxError::InvalidResponse(format!(
-                "Invalid signedData JWT payload base64: {e}"
-            ))
+            StandxError::InvalidResponse(format!("Invalid signedData JWT payload base64: {e}"))
         })?;
 
     let payload: serde_json::Value = serde_json::from_slice(&payload_bytes)?;
@@ -413,10 +415,15 @@ mod tests {
             .unwrap();
 
         assert_eq!(login.token, "jwt-token");
-        assert_eq!(auth_manager.jwt_manager().get_token(), Some("jwt-token".to_string()));
-        assert!(auth_manager
-            .list_stored_accounts()
-            .contains(&wallet.address().to_string()));
+        assert_eq!(
+            auth_manager.jwt_manager().get_token(),
+            Some("jwt-token".to_string())
+        );
+        assert!(
+            auth_manager
+                .list_stored_accounts()
+                .contains(&wallet.address().to_string())
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }

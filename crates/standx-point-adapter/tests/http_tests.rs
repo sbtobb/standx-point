@@ -13,12 +13,14 @@ use tokio_test::assert_ok;
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Match, Mock, Request, ResponseTemplate};
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rust_decimal::Decimal;
 use standx_point_adapter::http::signature::{
     HEADER_REQUEST_ID, HEADER_REQUEST_SIGNATURE, HEADER_REQUEST_TIMESTAMP, HEADER_REQUEST_VERSION,
 };
-use standx_point_adapter::{Ed25519Signer, NewOrderRequest, OrderStatus, OrderType, Side, TimeInForce};
+use standx_point_adapter::{
+    Ed25519Signer, NewOrderRequest, OrderStatus, OrderType, Side, TimeInForce,
+};
 use std::str;
 
 #[test]
@@ -77,7 +79,10 @@ async fn test_wiremock_basic_get() {
     assert!(response.status().is_success());
 
     let body: serde_json::Value = assert_ok!(response.json().await);
-    assert_eq!(body.get("status").and_then(|value| value.as_str()), Some("ok"));
+    assert_eq!(
+        body.get("status").and_then(|value| value.as_str()),
+        Some("ok")
+    );
 }
 
 #[derive(Clone)]
@@ -214,7 +219,11 @@ async fn test_http_user_endpoints_send_bearer_jwt() {
         chain: Chain::Bsc,
     });
 
-    let orders = assert_ok!(client.query_orders(Some("BTC-USD"), Some(OrderStatus::Filled), Some(10)).await);
+    let orders = assert_ok!(
+        client
+            .query_orders(Some("BTC-USD"), Some(OrderStatus::Filled), Some(10))
+            .await
+    );
     assert_eq!(orders.result.len(), 0);
 
     let open_orders = assert_ok!(client.query_open_orders(Some("BTC-USD")).await);
@@ -340,10 +349,14 @@ async fn test_http_trading_endpoints_send_body_signature_headers() {
     let new_order = assert_ok!(client.new_order(order_req).await);
     assert_eq!(new_order.code, 0);
 
-    let cancel = assert_ok!(client.cancel_order(standx_point_adapter::CancelOrderRequest {
-        order_id: Some(1),
-        cl_ord_id: None,
-    }).await);
+    let cancel = assert_ok!(
+        client
+            .cancel_order(standx_point_adapter::CancelOrderRequest {
+                order_id: Some(1),
+                cl_ord_id: None,
+            })
+            .await
+    );
     assert_eq!(cancel.code, 0);
 
     let change = assert_ok!(client.change_leverage("BTC-USD", 10).await);

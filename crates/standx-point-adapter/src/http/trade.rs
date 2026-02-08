@@ -35,11 +35,8 @@ impl StandxClient {
         let payload = serde_json::to_string(&req)?;
         let timestamp = crate::http::RequestSigner::timestamp_millis();
 
-        let (builder, _signature) = self.trading_post_with_jwt_and_signature(
-            "/api/cancel_order",
-            &payload,
-            timestamp,
-        )?;
+        let (builder, _signature) =
+            self.trading_post_with_jwt_and_signature("/api/cancel_order", &payload, timestamp)?;
 
         let builder = builder.body(payload);
         self.send_json(builder).await
@@ -61,11 +58,8 @@ impl StandxClient {
         let payload = serde_json::to_string(&req)?;
         let timestamp = crate::http::RequestSigner::timestamp_millis();
 
-        let (builder, _signature) = self.trading_post_with_jwt_and_signature(
-            "/api/change_leverage",
-            &payload,
-            timestamp,
-        )?;
+        let (builder, _signature) =
+            self.trading_post_with_jwt_and_signature("/api/change_leverage", &payload, timestamp)?;
 
         let builder = builder.body(payload);
         self.send_json(builder).await

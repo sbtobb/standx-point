@@ -7,10 +7,10 @@
 
 pub mod client;
 pub mod error;
-pub mod user;
 pub mod public;
 pub mod signature;
 pub mod trade;
+pub mod user;
 
 pub use error::{Result, StandxError};
 pub use signature::RequestSigner;

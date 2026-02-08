@@ -11,12 +11,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 use tracing::{debug, info};
 
 const MARKET_STREAM_URL: &str = "wss://perps.standx.com/ws-stream/v1";
@@ -41,9 +41,15 @@ static ERROR_RESPONSE_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 #[serde(tag = "channel")]
 pub enum WebSocketMessage {
     #[serde(rename = "price")]
-    Price { symbol: String, data: serde_json::Value },
+    Price {
+        symbol: String,
+        data: serde_json::Value,
+    },
     #[serde(rename = "depth_book")]
-    DepthBook { symbol: String, data: serde_json::Value },
+    DepthBook {
+        symbol: String,
+        data: serde_json::Value,
+    },
     #[serde(rename = "order")]
     Order { data: serde_json::Value },
     #[serde(rename = "position")]
@@ -170,7 +176,7 @@ impl StandxWebSocket {
         });
         self.send_subscription(msg).await
     }
-    
+
     /// Unsubscribe from price updates for a symbol
     pub async fn unsubscribe_price(&self, symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
         let msg = serde_json::json!({
@@ -181,7 +187,7 @@ impl StandxWebSocket {
         });
         self.send_subscription(msg).await
     }
-    
+
     /// Unsubscribe from depth book updates
     pub async fn unsubscribe_depth(&self, symbol: &str) -> Result<(), Box<dyn std::error::Error>> {
         let msg = serde_json::json!({
@@ -192,7 +198,7 @@ impl StandxWebSocket {
         });
         self.send_subscription(msg).await
     }
-    
+
     /// Unsubscribe from order updates (requires auth)
     pub async fn unsubscribe_orders(&self) -> Result<(), Box<dyn std::error::Error>> {
         let msg = serde_json::json!({
@@ -228,7 +234,9 @@ impl StandxWebSocket {
 
     async fn connect_stream_with_socket(
         &self,
-        ws_stream: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        ws_stream: tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let (mut write, mut read) = ws_stream.split();
         let (outbound_tx, mut outbound_rx) = mpsc::channel(100);
@@ -452,7 +460,9 @@ fn log_outbound_message(message: &serde_json::Value, stream: Option<&str>) {
     log_subscription_sent_with_stream(message, stream);
 }
 
-fn describe_subscription(message: &serde_json::Value) -> Option<(&'static str, &str, Option<&str>)> {
+fn describe_subscription(
+    message: &serde_json::Value,
+) -> Option<(&'static str, &str, Option<&str>)> {
     let (action, payload) = if let Some(payload) = message.get("subscribe") {
         ("subscribe", payload)
     } else if let Some(payload) = message.get("unsubscribe") {
@@ -593,7 +603,10 @@ fn log_error_response_once(value: &Value) {
         return;
     }
 
-    let code = value.get("code").and_then(Value::as_i64).unwrap_or_default();
+    let code = value
+        .get("code")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
     let message = value
         .get("message")
         .and_then(Value::as_str)
@@ -624,10 +637,7 @@ fn infer_position_message(value: &Value) -> Option<WebSocketMessage> {
         return None;
     }
 
-    let data = value
-        .get("data")
-        .cloned()
-        .unwrap_or_else(|| value.clone());
+    let data = value.get("data").cloned().unwrap_or_else(|| value.clone());
     Some(WebSocketMessage::Position { data })
 }
 
