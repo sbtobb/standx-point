@@ -6,15 +6,15 @@
 */
 
 use async_trait::async_trait;
-use base64::{prelude::BASE64_STANDARD, Engine};
+use base64::{Engine, prelude::BASE64_STANDARD};
 use bs58;
 use serde::Serialize;
-use solana_keypair::{keypair_from_seed, Keypair};
+use solana_keypair::{Keypair, keypair_from_seed};
 use solana_signer::Signer;
 
+use crate::auth::wallet::WalletSigner;
 use crate::http::{Result, StandxError};
 use crate::types::Chain;
-use crate::auth::wallet::WalletSigner;
 
 /// Solana wallet signer implementation
 pub struct SolanaWalletSigner {
@@ -82,7 +82,7 @@ impl WalletSigner for SolanaWalletSigner {
     async fn sign_message(&self, message: &str) -> Result<String> {
         let message_bytes = message.as_bytes();
         let signature = self.keypair.sign_message(message_bytes);
-        
+
         let payload = SolanaSignaturePayload {
             input: message.to_string(),
             output: SolanaSignatureOutput {
@@ -94,8 +94,7 @@ impl WalletSigner for SolanaWalletSigner {
             },
         };
 
-        let json = serde_json::to_string(&payload)
-            .map_err(StandxError::Serialization)?;
+        let json = serde_json::to_string(&payload).map_err(StandxError::Serialization)?;
 
         Ok(BASE64_STANDARD.encode(json))
     }
@@ -110,27 +109,33 @@ mod tests {
         // A dummy 32-byte seed in base58 (all zeros)
         let seed = "11111111111111111111111111111111";
         let signer = SolanaWalletSigner::new(seed).unwrap();
-        
+
         assert_eq!(signer.chain(), Chain::Solana);
 
         let message = "hello world";
         let signature_b64 = signer.sign_message(message).await.unwrap();
-        
+
         let decoded_json = BASE64_STANDARD.decode(signature_b64).unwrap();
         let decoded_json_str = String::from_utf8(decoded_json).unwrap();
-        
+
         let payload: serde_json::Value = serde_json::from_str(&decoded_json_str).unwrap();
         assert_eq!(payload["input"], "hello world");
-        assert_eq!(payload["output"]["signedMessage"], serde_json::json!(message.as_bytes()));
+        assert_eq!(
+            payload["output"]["signedMessage"],
+            serde_json::json!(message.as_bytes())
+        );
         assert!(payload["output"]["signature"].is_array());
-        assert_eq!(payload["output"]["account"]["publicKey"], serde_json::json!(signer.keypair.pubkey().to_bytes()));
+        assert_eq!(
+            payload["output"]["account"]["publicKey"],
+            serde_json::json!(signer.keypair.pubkey().to_bytes())
+        );
     }
 
     #[tokio::test]
     async fn test_solana_signer_invalid_key() {
         let result = SolanaWalletSigner::new("invalid_base58_!@#");
         assert!(result.is_err());
-        
+
         let result = SolanaWalletSigner::new("bs58tooShort");
         assert!(result.is_err());
     }

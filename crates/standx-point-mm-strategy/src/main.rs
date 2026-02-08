@@ -10,8 +10,8 @@
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use std::fs;
 use std::env;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,9 +25,9 @@ use tracing_subscriber::prelude::*;
 mod cli;
 mod state;
 
+use standx_point_adapter::Chain;
 use standx_point_adapter::auth::{EvmWalletSigner, SolanaWalletSigner};
 use standx_point_adapter::http::StandxClient;
-use standx_point_adapter::Chain;
 use standx_point_mm_strategy::{MarketDataHub, StrategyConfig, TaskManager};
 
 #[derive(Parser, Debug)]
@@ -112,7 +112,10 @@ async fn run_cli_mode(config_path: Option<PathBuf>, env_mode: bool, dry_run: boo
             if env_mode {
                 match load_env_config()? {
                     Some(config) => {
-                        info!(task_count = config.tasks.len(), "configuration loaded from env");
+                        info!(
+                            task_count = config.tasks.len(),
+                            "configuration loaded from env"
+                        );
                         config
                     }
                     None => return Ok(()),
@@ -207,11 +210,7 @@ fn validate_strategy_config(config: &StrategyConfig) -> Result<()> {
         if account.id.trim().is_empty() {
             return Err(anyhow!("account id cannot be empty"));
         }
-        let private_key = account
-            .private_key
-            .as_deref()
-            .unwrap_or("")
-            .trim();
+        let private_key = account.private_key.as_deref().unwrap_or("").trim();
         let jwt_token = account.jwt_token.as_deref().unwrap_or("").trim();
         let signing_key = account.signing_key.as_deref().unwrap_or("").trim();
 
@@ -225,10 +224,14 @@ fn validate_strategy_config(config: &StrategyConfig) -> Result<()> {
             ));
         }
         if has_jwt && !has_signing {
-            return Err(anyhow!("account signing_key cannot be empty when jwt_token is set"));
+            return Err(anyhow!(
+                "account signing_key cannot be empty when jwt_token is set"
+            ));
         }
         if has_signing && !has_jwt {
-            return Err(anyhow!("account jwt_token cannot be empty when signing_key is set"));
+            return Err(anyhow!(
+                "account jwt_token cannot be empty when signing_key is set"
+            ));
         }
         if !seen_accounts.insert(account.id.clone()) {
             return Err(anyhow!("duplicate account id in config: {}", account.id));
@@ -269,7 +272,8 @@ fn load_env_config() -> Result<Option<StrategyConfig>> {
     let risk_level = env::var("STANDX_MM_RISK_LEVEL").ok();
     let budget_usd = env::var("STANDX_MM_BUDGET_USD").ok();
 
-    let any_set = private_key.is_some() || symbol.is_some() || risk_level.is_some() || budget_usd.is_some();
+    let any_set =
+        private_key.is_some() || symbol.is_some() || risk_level.is_some() || budget_usd.is_some();
     if !any_set {
         return Ok(None);
     }
@@ -283,10 +287,8 @@ fn load_env_config() -> Result<Option<StrategyConfig>> {
     let wallet_address = derive_wallet_address(&private_key, chain)?;
 
     let account_id = env::var("STANDX_MM_ACCOUNT_ID").unwrap_or(wallet_address);
-    let task_id = env::var("STANDX_MM_TASK_ID").unwrap_or_else(|_| format!(
-        "task-{}",
-        slugify_symbol(&symbol)
-    ));
+    let task_id = env::var("STANDX_MM_TASK_ID")
+        .unwrap_or_else(|_| format!("task-{}", slugify_symbol(&symbol)));
 
     let config = StrategyConfig {
         accounts: vec![standx_point_mm_strategy::config::AccountConfig {
@@ -315,7 +317,9 @@ fn parse_chain(raw: Option<String>) -> Result<Chain> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "bsc" => Ok(Chain::Bsc),
         "solana" => Ok(Chain::Solana),
-        other => Err(anyhow!("invalid STANDX_MM_CHAIN: {other} (use bsc or solana)")),
+        other => Err(anyhow!(
+            "invalid STANDX_MM_CHAIN: {other} (use bsc or solana)"
+        )),
     }
 }
 
@@ -324,12 +328,12 @@ fn derive_wallet_address(private_key: &str, chain: Chain) -> Result<String> {
         Chain::Bsc => {
             let wallet = EvmWalletSigner::new(private_key)
                 .map_err(|err| anyhow!("invalid EVM private key: {err}"))?;
-            Ok(wallet.address().to_string())
+            Ok(standx_point_adapter::auth::WalletSigner::address(&wallet).to_string())
         }
         Chain::Solana => {
             let wallet = SolanaWalletSigner::new(private_key)
                 .map_err(|err| anyhow!("invalid Solana private key: {err}"))?;
-            Ok(wallet.address().to_string())
+            Ok(standx_point_adapter::auth::WalletSigner::address(&wallet).to_string())
         }
     }
 }

@@ -13,7 +13,7 @@ use standx_point_adapter::*;
 #[tokio::main]
 async fn main() {
     println!("=== StandX Market Data Example ===\n");
-    
+
     // Create client (no auth needed for public endpoints)
     let client = match StandxClient::new() {
         Ok(c) => c,
@@ -23,29 +23,29 @@ async fn main() {
         }
     };
     println!("✓ HTTP client created (no auth required for public endpoints)\n");
-    
+
     let symbol = "BTC-USD";
-    
+
     // Query symbol information
     println!("Querying symbol info for {}...", symbol);
     match client.query_symbol_info(symbol).await {
         Ok(info) => println!("✓ Symbol info: {:?}", info),
         Err(e) => println!("✗ Error: {} (HTTP not yet fully implemented)", e),
     }
-    
+
     // Query current price
     println!("\nQuerying price for {}...", symbol);
     match client.query_symbol_price(symbol).await {
         Ok(price) => println!("✓ Price: {:?}", price),
         Err(e) => println!("✗ Error: {} (HTTP not yet fully implemented)", e),
     }
-    
+
     // Query order book depth
     println!("\nQuerying depth book for {}...", symbol);
     match client.query_depth_book(symbol).await {
         Ok(depth) => println!("✓ Depth: {:?}", depth),
         Err(e) => println!("✗ Error: {} (HTTP not yet fully implemented)", e),
     }
-    
+
     println!("\n✓ Market data example complete");
 }

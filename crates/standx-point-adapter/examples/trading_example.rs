@@ -5,8 +5,8 @@
 [UPDATE]: When trading API changes
 */
 
-use standx_point_adapter::*;
 use rust_decimal::Decimal;
+use standx_point_adapter::*;
 use std::str::FromStr;
 
 /// Example: Trading operations (requires authentication + body signature)
@@ -17,9 +17,9 @@ use std::str::FromStr;
 #[tokio::main]
 async fn main() {
     println!("=== StandX Trading Example ===\n");
-    
+
     // Create client
-    let client = match StandxClient::new() {
+    let _client = match StandxClient::new() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to create client: {}", e);
@@ -27,16 +27,16 @@ async fn main() {
         }
     };
     println!("✓ HTTP client created");
-    
+
     // In production:
     // 1. Authenticate to get JWT token
     // 2. Set credentials on client
     // 3. Use RequestSigner to sign request bodies
-    
+
     println!("\nTrading requires:");
     println!("  1. JWT token (from authentication)");
     println!("  2. Ed25519 body signature for each request");
-    
+
     // Example: Create a new order
     println!("\nExample order request:");
     let order_req = NewOrderRequest {
@@ -54,10 +54,10 @@ async fn main() {
         sl_price: None,
     };
     println!("  {:?}", order_req);
-    
+
     // In production:
     // let response = client.new_order(order_req).await?;
-    
+
     println!("\n✓ Trading example complete");
     println!("  Note: Full implementation requires HTTP client completion");
 }

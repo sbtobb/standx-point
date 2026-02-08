@@ -235,12 +235,24 @@ mod tests {
 
         let expected = DepthBook {
             asks: vec![
-                DepthLevel("100.5".parse().expect("ask_price"), "1.2".parse().expect("ask_qty")),
-                DepthLevel("101.0".parse().expect("ask_price"), "2.0".parse().expect("ask_qty")),
+                DepthLevel(
+                    "100.5".parse().expect("ask_price"),
+                    "1.2".parse().expect("ask_qty"),
+                ),
+                DepthLevel(
+                    "101.0".parse().expect("ask_price"),
+                    "2.0".parse().expect("ask_qty"),
+                ),
             ],
             bids: vec![
-                DepthLevel("99.5".parse().expect("bid_price"), "1.0".parse().expect("bid_qty")),
-                DepthLevel("99.0".parse().expect("bid_price"), "3.0".parse().expect("bid_qty")),
+                DepthLevel(
+                    "99.5".parse().expect("bid_price"),
+                    "1.0".parse().expect("bid_qty"),
+                ),
+                DepthLevel(
+                    "99.0".parse().expect("bid_price"),
+                    "3.0".parse().expect("bid_qty"),
+                ),
             ],
             symbol: "BTCUSDT".to_string(),
         };

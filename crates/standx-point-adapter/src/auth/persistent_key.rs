@@ -2,18 +2,21 @@
 [INPUT]:  Wallet address and key storage directory
 [OUTPUT]: Persistent Ed25519 signer instances
 [POS]:    Auth layer - persistent storage for session-signing keys
-[UPDATE]: When key storage format or file naming conventions change
+ [UPDATE]: When key storage format or file naming conventions change
+ [UPDATE]: Add cross-platform key file permission handling
 */
 
 use std::fs;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 
 use crate::auth::Ed25519Signer;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 /// Manages persistence of Ed25519 session keys
 #[derive(Debug, Clone)]
@@ -67,9 +70,7 @@ impl PersistentKeyManager {
 
         fs::write(&path, encoded)?;
 
-        let mut perms = fs::metadata(&path)?.permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(&path, perms)?;
+        set_key_permissions(&path)?;
 
         Ok(())
     }
@@ -95,11 +96,28 @@ impl PersistentKeyManager {
     }
 }
 
+fn set_key_permissions(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(path, perms)?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::env;
     use uuid::Uuid;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     fn temp_dir() -> PathBuf {
         let mut path = env::temp_dir();
@@ -128,9 +146,12 @@ mod tests {
         let accounts = manager.list_stored_accounts();
         assert_eq!(accounts, vec![wallet]);
 
-        let path = manager.key_file_path(wallet);
-        let metadata = fs::metadata(path).unwrap();
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            let path = manager.key_file_path(wallet);
+            let metadata = fs::metadata(path).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        }
 
         fs::remove_dir_all(dir).unwrap();
     }

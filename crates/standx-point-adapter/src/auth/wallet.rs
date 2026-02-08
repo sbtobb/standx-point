@@ -69,11 +69,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_signer() {
-        let signer = MockWalletSigner::new(
-            Chain::Bsc,
-            "0x1234567890abcdef",
-            "0xmock_signature",
-        );
+        let signer = MockWalletSigner::new(Chain::Bsc, "0x1234567890abcdef", "0xmock_signature");
 
         assert_eq!(signer.chain(), Chain::Bsc);
         assert_eq!(signer.address(), "0x1234567890abcdef");

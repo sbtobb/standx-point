@@ -25,7 +25,7 @@ use standx_point_adapter::auth::{AuthManager, EvmWalletSigner, SolanaWalletSigne
 use standx_point_adapter::{
     Balance, CancelOrderRequest, Chain, ClientConfig, Credentials, Ed25519Signer, NewOrderRequest,
     Order, OrderStatus, OrderType, PaginatedOrders, Position, Side, StandxClient, StandxError,
-    SymbolPrice, SymbolInfo, TimeInForce, WebSocketMessage, StandxWebSocket,
+    StandxWebSocket, SymbolInfo, SymbolPrice, TimeInForce, WebSocketMessage,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -99,7 +99,7 @@ struct SymbolCache {
 }
 
 #[derive(Debug)]
-struct AccountAuth {
+pub(crate) struct AccountAuth {
     jwt_token: String,
     signing_key: [u8; 32],
     wallet_address: String,
@@ -107,7 +107,11 @@ struct AccountAuth {
 }
 
 impl AccountAuth {
-    fn from_static(account: &AccountConfig, jwt_token: &str, signing_key_base64: &str) -> Result<Self> {
+    fn from_static(
+        account: &AccountConfig,
+        jwt_token: &str,
+        signing_key_base64: &str,
+    ) -> Result<Self> {
         let signing_key = decode_ed25519_secret_key_base64(signing_key_base64)
             .context("decode signing_key (base64) failed")?;
         Ok(Self {
@@ -149,11 +153,7 @@ async fn resolve_account_auth(
         }
     }
 
-    let private_key = account
-        .private_key
-        .as_deref()
-        .unwrap_or("")
-        .trim();
+    let private_key = account.private_key.as_deref().unwrap_or("").trim();
     if private_key.is_empty() {
         return Err(anyhow!(
             "account {} missing private_key (jwt_token+signing_key not provided)",
@@ -161,32 +161,31 @@ async fn resolve_account_auth(
         ));
     }
 
-    let auth_client = StandxClient::with_config_and_base_urls(
-        client_config,
-        auth_base_url,
-        trading_base_url,
-    )
-    .map_err(|err| anyhow!("create StandxClient for auth failed: {err}"))?;
+    let auth_client =
+        StandxClient::with_config_and_base_urls(client_config, auth_base_url, trading_base_url)
+            .map_err(|err| anyhow!("create StandxClient for auth failed: {err}"))?;
     let auth = AuthManager::new(auth_client);
 
     let (wallet_address, jwt_token) = match account.chain {
         Chain::Bsc => {
-            let wallet =
-                EvmWalletSigner::new(private_key).map_err(|err| anyhow!("invalid EVM private key: {err}"))?;
+            let wallet = EvmWalletSigner::new(private_key)
+                .map_err(|err| anyhow!("invalid EVM private key: {err}"))?;
+            let wallet_address = standx_point_adapter::auth::WalletSigner::address(&wallet).to_string();
             let login = auth
                 .authenticate(&wallet, DEFAULT_JWT_EXPIRES_SECONDS)
                 .await
                 .map_err(|err| anyhow!("authenticate failed: {err}"))?;
-            (wallet.address().to_string(), login.token)
+            (wallet_address, login.token)
         }
         Chain::Solana => {
             let wallet = SolanaWalletSigner::new(private_key)
                 .map_err(|err| anyhow!("invalid Solana private key: {err}"))?;
+            let wallet_address = standx_point_adapter::auth::WalletSigner::address(&wallet).to_string();
             let login = auth
                 .authenticate(&wallet, DEFAULT_JWT_EXPIRES_SECONDS)
                 .await
                 .map_err(|err| anyhow!("authenticate failed: {err}"))?;
-            (wallet.address().to_string(), login.token)
+            (wallet_address, login.token)
         }
     };
 
@@ -198,7 +197,7 @@ async fn resolve_account_auth(
     Ok(AccountAuth {
         jwt_token,
         signing_key: signer.secret_key_bytes(),
-        wallet_address,
+        wallet_address: wallet_address.to_string(),
         chain: account.chain,
     })
 }
@@ -268,7 +267,7 @@ impl TaskManager {
     /// Spawn tasks from configuration using a custom StandxClient builder.
     ///
     /// This is primarily intended for tests where callers inject wiremock base URLs.
-    pub async fn spawn_from_config_with_client_builder<F>(
+    pub(crate) async fn spawn_from_config_with_client_builder<F>(
         &mut self,
         config: StrategyConfig,
         build_client: F,
@@ -307,12 +306,12 @@ impl TaskManager {
                 ));
             }
 
-            let account = accounts_by_id.get(&task_config.account_id).ok_or_else(|| {
-                anyhow!("account_id not found for task_id={}", task_config.id)
-            })?;
-            let account_auth = auth_by_id.get(&task_config.account_id).ok_or_else(|| {
-                anyhow!("account auth not found for task_id={}", task_config.id)
-            })?;
+            let account = accounts_by_id
+                .get(&task_config.account_id)
+                .ok_or_else(|| anyhow!("account_id not found for task_id={}", task_config.id))?;
+            let account_auth = auth_by_id
+                .get(&task_config.account_id)
+                .ok_or_else(|| anyhow!("account auth not found for task_id={}", task_config.id))?;
 
             let client = build_client(&task_config, account, account_auth)
                 .with_context(|| format!("build StandxClient for task_id={}", task_config.id))?;
@@ -330,13 +329,7 @@ impl TaskManager {
                 self.symbol_cache.clone(),
             );
             let handle = task.spawn();
-            self.tasks.insert(
-                task_id,
-                ManagedTask {
-                    shutdown,
-                    handle,
-                },
-            );
+            self.tasks.insert(task_id, ManagedTask { shutdown, handle });
         }
 
         Ok(())
@@ -518,7 +511,8 @@ impl Task {
         }
     }
 
-    pub fn try_from_config(
+    #[allow(dead_code)]
+    pub(crate) fn try_from_config(
         config: TaskConfig,
         account: &AccountConfig,
         account_auth: &AccountAuth,
@@ -536,7 +530,7 @@ impl Task {
         ))
     }
 
-    pub fn build_client(
+    pub(crate) fn build_client(
         config: &TaskConfig,
         _account: &AccountConfig,
         account_auth: &AccountAuth,
@@ -551,7 +545,7 @@ impl Task {
         )
     }
 
-    pub fn build_client_with_config_and_base_urls(
+    pub(crate) fn build_client_with_config_and_base_urls(
         _config: &TaskConfig,
         _account: &AccountConfig,
         account_auth: &AccountAuth,
@@ -1056,7 +1050,15 @@ impl Task {
             if position.qty.is_zero() {
                 continue;
             }
-            if let Err(err) = Self::close_position_qty(&self.client, self.id, &self.config.id, &position.symbol, position.qty).await {
+            if let Err(err) = Self::close_position_qty(
+                &self.client,
+                self.id,
+                &self.config.id,
+                &position.symbol,
+                position.qty,
+            )
+            .await
+            {
                 if first_error.is_none() {
                     first_error = Some(err);
                 }
@@ -1070,7 +1072,13 @@ impl Task {
         Ok(())
     }
 
-    async fn close_position_qty(client: &StandxClient, task_uuid: Uuid, task_id: &str, symbol: &str, qty: Decimal) -> Result<()> {
+    async fn close_position_qty(
+        client: &StandxClient,
+        task_uuid: Uuid,
+        task_id: &str,
+        symbol: &str,
+        qty: Decimal,
+    ) -> Result<()> {
         if qty.is_zero() {
             return Ok(());
         }
@@ -1630,12 +1638,9 @@ impl Task {
             }
         }
 
-        let Some((side, price)) = exit_price_for_position(
-            mark_price,
-            position_qty,
-            policy,
-            symbol_info.as_ref(),
-        ) else {
+        let Some((side, price)) =
+            exit_price_for_position(mark_price, position_qty, policy, symbol_info.as_ref())
+        else {
             tracing::warn!(
                 task_uuid = %task_uuid,
                 task_id = %task_id,
@@ -1657,15 +1662,9 @@ impl Task {
             Self::cancel_guard_order(client, task_uuid, task_id, &order.cl_ord_id).await;
         }
 
-        if let Some(order) = Self::place_guard_order(
-            client,
-            task_uuid,
-            task_id,
-            task_symbol,
-            side,
-            qty,
-            price,
-        ).await {
+        if let Some(order) =
+            Self::place_guard_order(client, task_uuid, task_id, task_symbol, side, qty, price).await
+        {
             guard_state.guard_order = Some(order);
         }
     }
@@ -1787,10 +1786,9 @@ fn parse_ws_positions(data: &serde_json::Value) -> Vec<WsPositionUpdate> {
     }
 
     match data {
-        serde_json::Value::Array(items) => items
-            .iter()
-            .filter_map(parse_ws_position_entry)
-            .collect(),
+        serde_json::Value::Array(items) => {
+            items.iter().filter_map(parse_ws_position_entry).collect()
+        }
         serde_json::Value::Object(_) => parse_ws_position_entry(data).into_iter().collect(),
         _ => Vec::new(),
     }
@@ -1818,7 +1816,10 @@ fn parse_decimal_value(value: &serde_json::Value) -> Option<Decimal> {
     None
 }
 
-fn exit_guard_policy_for_risk(level: RiskLevel, symbol_info: Option<&SymbolInfo>) -> ExitGuardPolicy {
+fn exit_guard_policy_for_risk(
+    level: RiskLevel,
+    symbol_info: Option<&SymbolInfo>,
+) -> ExitGuardPolicy {
     let (exit_bps, guard_bps) = match level {
         RiskLevel::Low => (
             Decimal::from(DEFAULT_EXIT_BPS_CONSERVATIVE),
@@ -1980,10 +1981,10 @@ async fn save_symbol_cache(cache: &SymbolCache) -> Result<()> {
 mod tests {
     use super::*;
 
+    use serde_json::json;
     use std::str::FromStr;
     use std::sync::OnceLock;
     use tokio::sync::Mutex;
-    use serde_json::json;
 
     // Static async lock to serialize wiremock-heavy tests and prevent flakiness
     static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -2036,15 +2037,13 @@ mod tests {
         let policy = exit_guard_policy_for_risk(RiskLevel::High, Some(&info));
         let mark_price = dec("100.00");
 
-        let (side, price) =
-            exit_price_for_position(mark_price, dec("1"), policy, Some(&info))
-                .expect("exit price should exist");
+        let (side, price) = exit_price_for_position(mark_price, dec("1"), policy, Some(&info))
+            .expect("exit price should exist");
         assert_eq!(side, Side::Sell);
         assert_eq!(price, dec("100.05"));
 
-        let (side, price) =
-            exit_price_for_position(mark_price, dec("-2"), policy, Some(&info))
-                .expect("exit price should exist");
+        let (side, price) = exit_price_for_position(mark_price, dec("-2"), policy, Some(&info))
+            .expect("exit price should exist");
         assert_eq!(side, Side::Buy);
         assert_eq!(price, dec("99.95"));
     }
@@ -2112,11 +2111,7 @@ mod tests {
     use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
-    async fn wait_for_request_count(
-        server: &MockServer,
-        expected: usize,
-        timeout: Duration,
-    ) {
+    async fn wait_for_request_count(server: &MockServer, expected: usize, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         loop {
             let count = server.received_requests().await.unwrap_or_default().len();
@@ -2124,9 +2119,7 @@ mod tests {
                 return;
             }
             if Instant::now() >= deadline {
-                panic!(
-                    "timed out waiting for {expected} requests, last count={count}"
-                );
+                panic!("timed out waiting for {expected} requests, last count={count}");
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -2189,11 +2182,7 @@ mod tests {
         }
     }
 
-    fn test_task_config_with_id(
-        task_id: &str,
-        symbol: &str,
-        account_id: &str,
-    ) -> TaskConfig {
+    fn test_task_config_with_id(task_id: &str, symbol: &str, account_id: &str) -> TaskConfig {
         TaskConfig {
             id: task_id.to_string(),
             symbol: symbol.to_string(),
@@ -2729,26 +2718,29 @@ mod tests {
             connect_timeout: Duration::from_secs(30),
         };
         manager
-            .spawn_from_config_with_client_builder(strategy_config, |cfg, account_cfg, account_auth| {
-                Task::build_client_with_config_and_base_urls(
-                    cfg,
-                    account_cfg,
-                    account_auth,
-                    client_config.clone(),
-                    &base_url,
-                    &base_url,
-                )
-            })
+            .spawn_from_config_with_client_builder(
+                strategy_config,
+                |cfg, account_cfg, account_auth| {
+                    Task::build_client_with_config_and_base_urls(
+                        cfg,
+                        account_cfg,
+                        account_auth,
+                        client_config.clone(),
+                        &base_url,
+                        &base_url,
+                    )
+                },
+            )
             .await
             .unwrap();
 
         wait_for_request_count(&server, 1, Duration::from_secs(5)).await;
 
         manager.shutdown_and_wait().await.unwrap();
-        
+
         // Allow wiremock to finish processing all requests before checking count
         tokio::time::sleep(Duration::from_millis(1000)).await;
-        
+
         wait_for_request_count(&server, 3, Duration::from_secs(10)).await;
     }
 
@@ -2819,16 +2811,19 @@ mod tests {
             connect_timeout: Duration::from_secs(30),
         };
         manager
-            .spawn_from_config_with_client_builder(strategy_config, |cfg, account_cfg, account_auth| {
-                Task::build_client_with_config_and_base_urls(
-                    cfg,
-                    account_cfg,
-                    account_auth,
-                    client_config.clone(),
-                    &base_url,
-                    &base_url,
-                )
-            })
+            .spawn_from_config_with_client_builder(
+                strategy_config,
+                |cfg, account_cfg, account_auth| {
+                    Task::build_client_with_config_and_base_urls(
+                        cfg,
+                        account_cfg,
+                        account_auth,
+                        client_config.clone(),
+                        &base_url,
+                        &base_url,
+                    )
+                },
+            )
             .await
             .unwrap();
 

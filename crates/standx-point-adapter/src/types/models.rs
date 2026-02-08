@@ -49,7 +49,11 @@ pub struct SymbolInfo {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Order {
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub avail_locked: Decimal,
     pub cl_ord_id: String,
     pub closed_block: i64,
@@ -400,5 +404,44 @@ mod serde_helpers {
         let order: Order = serde_json::from_value(value).expect("order should deserialize");
 
         assert_eq!(order.margin, Decimal::ZERO);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn order_deserializes_without_avail_locked() {
+        let value = json!({
+            "cl_ord_id": "cl-1",
+            "closed_block": 0,
+            "created_at": "0",
+            "created_block": 0,
+            "fill_avg_price": "0",
+            "fill_qty": "0",
+            "id": 1,
+            "leverage": "1",
+            "liq_id": 0,
+            "margin": "0",
+            "order_type": "limit",
+            "position_id": 0,
+            "price": "100",
+            "qty": "1",
+            "reduce_only": false,
+            "remark": "",
+            "side": "buy",
+            "source": "test",
+            "status": "open",
+            "symbol": "BTC-USD",
+            "time_in_force": "gtc",
+            "updated_at": "0",
+            "user": "user"
+        });
+
+        let order: Order = serde_json::from_value(value).expect("order should deserialize");
+
+        assert_eq!(order.avail_locked, Decimal::ZERO);
     }
 }
