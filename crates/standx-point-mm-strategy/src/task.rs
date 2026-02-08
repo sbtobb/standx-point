@@ -25,7 +25,7 @@ use standx_point_adapter::auth::{AuthManager, EvmWalletSigner, SolanaWalletSigne
 use standx_point_adapter::{
     Balance, CancelOrderRequest, Chain, ClientConfig, Credentials, Ed25519Signer, NewOrderRequest,
     Order, OrderStatus, OrderType, PaginatedOrders, Position, Side, StandxClient, StandxError,
-    StandxWebSocket, SymbolInfo, SymbolPrice, TimeInForce, WalletSigner, WebSocketMessage,
+    StandxWebSocket, SymbolInfo, SymbolPrice, TimeInForce, WebSocketMessage,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -170,20 +170,22 @@ async fn resolve_account_auth(
         Chain::Bsc => {
             let wallet = EvmWalletSigner::new(private_key)
                 .map_err(|err| anyhow!("invalid EVM private key: {err}"))?;
+            let wallet_address = standx_point_adapter::auth::WalletSigner::address(&wallet).to_string();
             let login = auth
                 .authenticate(&wallet, DEFAULT_JWT_EXPIRES_SECONDS)
                 .await
                 .map_err(|err| anyhow!("authenticate failed: {err}"))?;
-            (wallet.address().to_string(), login.token)
+            (wallet_address, login.token)
         }
         Chain::Solana => {
             let wallet = SolanaWalletSigner::new(private_key)
                 .map_err(|err| anyhow!("invalid Solana private key: {err}"))?;
+            let wallet_address = standx_point_adapter::auth::WalletSigner::address(&wallet).to_string();
             let login = auth
                 .authenticate(&wallet, DEFAULT_JWT_EXPIRES_SECONDS)
                 .await
                 .map_err(|err| anyhow!("authenticate failed: {err}"))?;
-            (wallet.address().to_string(), login.token)
+            (wallet_address, login.token)
         }
     };
 
