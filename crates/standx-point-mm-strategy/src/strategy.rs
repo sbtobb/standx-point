@@ -391,6 +391,7 @@ impl MarketMakingStrategy {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_params(
         symbol: String,
         budget_usd: Decimal,
@@ -786,7 +787,7 @@ impl MarketMakingStrategy {
                     if now >= cancel.deadline {
                         if cancel
                             .last_reconcile_at
-                            .map_or(true, |last| {
+                            .is_none_or(|last| {
                                 now.saturating_duration_since(last) >= CANCEL_RECONCILE_COOLDOWN
                             })
                         {
@@ -960,16 +961,16 @@ impl MarketMakingStrategy {
     }
 
     fn quote_reference_price(&self, snapshot: &SymbolPrice) -> Decimal {
-        if let Some(mid_price) = snapshot.mid_price {
-            if mid_price > Decimal::ZERO {
-                return mid_price;
-            }
+        if let Some(mid_price) = snapshot.mid_price
+            && mid_price > Decimal::ZERO
+        {
+            return mid_price;
         }
 
-        if let Some(last_price) = snapshot.last_price {
-            if last_price > Decimal::ZERO {
-                return last_price;
-            }
+        if let Some(last_price) = snapshot.last_price
+            && last_price > Decimal::ZERO
+        {
+            return last_price;
         }
 
         snapshot.mark_price
@@ -977,7 +978,7 @@ impl MarketMakingStrategy {
 
     fn bootstrap_allows_side(&self, side: QuoteSide) -> bool {
         self.bootstrap_side
-            .map_or(true, |bootstrap| bootstrap == side)
+            .is_none_or(|bootstrap| bootstrap == side)
     }
 
     fn side_increases_inventory_abs(&self, side: QuoteSide) -> bool {
@@ -1349,21 +1350,19 @@ impl MarketMakingStrategy {
             None => qty,
         };
 
-        if let Some(max_qty) = self.max_order_qty {
-            if aligned > max_qty {
-                aligned = match self.qty_tick_decimals {
-                    Some(decimals) => {
-                        max_qty.round_dp_with_strategy(decimals, RoundingStrategy::ToZero)
-                    }
-                    None => max_qty,
-                };
-            }
+        if let Some(max_qty) = self.max_order_qty
+            && aligned > max_qty
+        {
+            aligned = match self.qty_tick_decimals {
+                Some(decimals) => max_qty.round_dp_with_strategy(decimals, RoundingStrategy::ToZero),
+                None => max_qty,
+            };
         }
 
-        if let Some(min_qty) = self.min_order_qty {
-            if aligned < min_qty {
-                return Decimal::ZERO;
-            }
+        if let Some(min_qty) = self.min_order_qty
+            && aligned < min_qty
+        {
+            return Decimal::ZERO;
         }
 
         aligned
