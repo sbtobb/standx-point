@@ -101,7 +101,7 @@ async fn select_tasks_to_run(
         .into_iter()
         .map(|idx| tasks[idx].clone())
         .collect();
-    let config = build_strategy_config(&storage, &selected_tasks).await?;
+    let config = build_strategy_config(&storage, &selected_tasks, false).await?;
     print_strategy_summary(&config);
 
     let confirmed = Confirm::with_theme(theme)
@@ -484,7 +484,11 @@ async fn delete_task(storage: Arc<Storage>, theme: &ColorfulTheme) -> Result<()>
     Ok(())
 }
 
-async fn build_strategy_config(storage: &Storage, tasks: &[Task]) -> Result<StrategyConfig> {
+pub(crate) async fn build_strategy_config(
+    storage: &Storage,
+    tasks: &[Task],
+    quiet: bool,
+) -> Result<StrategyConfig> {
     let mut configs = Vec::with_capacity(tasks.len());
     let mut refreshed_accounts: HashMap<String, Account> = HashMap::new();
     for task in tasks {
@@ -498,7 +502,7 @@ async fn build_strategy_config(storage: &Storage, tasks: &[Task]) -> Result<Stra
                     task.id
                 )
             })?;
-            let refreshed = refresh_account(storage, &account).await?;
+            let refreshed = refresh_account(storage, &account, quiet).await?;
             refreshed_accounts.insert(task.account_id.clone(), refreshed.clone());
             refreshed
         };
@@ -564,7 +568,7 @@ async fn authenticate_account(private_key: &str, chain: Chain) -> Result<(String
     Ok((wallet_address, login_response.token, signing_key))
 }
 
-async fn refresh_account(storage: &Storage, account: &Account) -> Result<Account> {
+async fn refresh_account(storage: &Storage, account: &Account, quiet: bool) -> Result<Account> {
     let chain = account
         .chain
         .ok_or_else(|| anyhow!("account chain not set"))?;
@@ -572,11 +576,13 @@ async fn refresh_account(storage: &Storage, account: &Account) -> Result<Account
         return Err(anyhow!("account private key is missing"));
     }
 
-    println!(
-        "{} {}",
-        style("Refreshing credentials for account:").dim(),
-        style(&account.id).cyan()
-    );
+    if !quiet {
+        println!(
+            "{} {}",
+            style("Refreshing credentials for account:").dim(),
+            style(&account.id).cyan()
+        );
+    }
 
     let (wallet_address, jwt_token, signing_key) =
         authenticate_account(&account.private_key, chain).await?;
@@ -597,11 +603,13 @@ async fn refresh_account(storage: &Storage, account: &Account) -> Result<Account
         .await
         .context("update account credentials")?;
 
-    println!(
-        "{} {}",
-        style("Credentials refreshed for account:").dim(),
-        style(&account.id).green()
-    );
+    if !quiet {
+        println!(
+            "{} {}",
+            style("Credentials refreshed for account:").dim(),
+            style(&account.id).green()
+        );
+    }
 
     let mut refreshed = account.clone();
     refreshed.jwt_token = jwt_token;

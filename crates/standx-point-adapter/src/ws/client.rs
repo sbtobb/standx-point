@@ -18,6 +18,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 use tracing::{debug, info};
+use uuid::Uuid;
 
 const MARKET_STREAM_URL: &str = "wss://perps.standx.com/ws-stream/v1";
 const ORDER_STREAM_URL: &str = "wss://perps.standx.com/ws-api/v1";
@@ -326,6 +327,8 @@ impl StandxWebSocket {
 
         let stream_kind = { self.stream_kind.lock().await.clone() };
 
+        let message = ensure_request_id(message, stream_kind.as_deref());
+
         sender
             .send(WsMessage::Text(message.to_string().into()))
             .await
@@ -492,6 +495,26 @@ fn describe_auth_streams(message: &serde_json::Value) -> Vec<String> {
         .filter_map(|entry| entry.get("channel").and_then(|value| value.as_str()))
         .map(str::to_string)
         .collect()
+}
+
+fn ensure_request_id(message: serde_json::Value, stream_kind: Option<&str>) -> serde_json::Value {
+    let mut value = message;
+    let Some(object) = value.as_object_mut() else {
+        return value;
+    };
+
+    if stream_kind != Some("order") {
+        return value;
+    }
+
+    if !object.contains_key("request_id") {
+        object.insert(
+            "request_id".to_string(),
+            serde_json::Value::String(Uuid::new_v4().to_string()),
+        );
+    }
+
+    value
 }
 
 fn log_message_sample_once(message: &WebSocketMessage) {

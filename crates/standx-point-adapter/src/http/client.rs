@@ -17,6 +17,7 @@ use reqwest::{Client, Method, RequestBuilder, Url};
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use std::time::Duration;
+use tracing::error;
 
 /// Base URLs for StandX API
 const AUTH_BASE_URL: &str = "https://api.standx.com";
@@ -186,7 +187,26 @@ impl StandxClient {
                 let body = response.text().await?;
 
                 if status.is_success() {
-                    return Ok(serde_json::from_str::<T>(&body)?);
+                    return serde_json::from_str::<T>(&body).map_err(|err| {
+                        const MAX_BODY_LOG_CHARS: usize = 2000;
+                        let preview: String = body.chars().take(MAX_BODY_LOG_CHARS).collect();
+                        let truncated = body.chars().skip(MAX_BODY_LOG_CHARS).next().is_some();
+                        let body_preview = if truncated {
+                            format!("{preview}...[truncated]")
+                        } else {
+                            preview
+                        };
+
+                        error!(
+                            status = %status,
+                            body_len = body.len(),
+                            body = %body_preview,
+                            error = %err,
+                            "response deserialization failed"
+                        );
+
+                        StandxError::Serialization(err)
+                    });
                 }
 
                 if status == reqwest::StatusCode::UNAUTHORIZED {

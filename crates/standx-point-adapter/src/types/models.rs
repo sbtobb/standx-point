@@ -67,7 +67,11 @@ pub struct Order {
     #[serde(with = "rust_decimal::serde::str")]
     pub leverage: Decimal,
     pub liq_id: i64,
-    #[serde(with = "rust_decimal::serde::str")]
+    #[serde(
+        default,
+        deserialize_with = "serde_helpers::deserialize_decimal_or_zero",
+        serialize_with = "serde_helpers::serialize_decimal"
+    )]
     pub margin: Decimal,
     pub order_type: OrderType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -406,5 +410,37 @@ mod tests {
         let order: Order = serde_json::from_value(value).expect("order should deserialize");
 
         assert_eq!(order.avail_locked, Decimal::ZERO);
+    }
+
+    #[test]
+    fn order_deserializes_without_margin() {
+        let value = json!({
+            "cl_ord_id": "cl-1",
+            "closed_block": 0,
+            "created_at": "0",
+            "created_block": 0,
+            "fill_avg_price": "0",
+            "fill_qty": "0",
+            "id": 1,
+            "leverage": "1",
+            "liq_id": 0,
+            "order_type": "limit",
+            "position_id": 0,
+            "price": "100",
+            "qty": "1",
+            "reduce_only": false,
+            "remark": "",
+            "side": "buy",
+            "source": "test",
+            "status": "open",
+            "symbol": "BTC-USD",
+            "time_in_force": "gtc",
+            "updated_at": "0",
+            "user": "user"
+        });
+
+        let order: Order = serde_json::from_value(value).expect("order should deserialize");
+
+        assert_eq!(order.margin, Decimal::ZERO);
     }
 }

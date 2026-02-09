@@ -9,6 +9,7 @@
 [UPDATE]: 2026-02-07 Align order price/qty with tick constraints.
 [UPDATE]: 2026-02-07 Replace quotes when bps exits safety band.
 [UPDATE]: 2026-02-07 Budget reflects total bid+ask notional.
+[UPDATE]: 2026-02-09 Gate replace on cancel ack with reconcile fallback.
 */
 
 use std::collections::{HashMap, HashSet};
@@ -19,9 +20,9 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use rust_decimal::{Decimal, RoundingStrategy};
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use standx_point_adapter::{
@@ -30,6 +31,7 @@ use standx_point_adapter::{
 };
 
 use crate::order_state::{OrderState, OrderTracker};
+use crate::metrics::TaskMetrics;
 use crate::risk::{RiskManager, RiskState};
 
 const BPS_DENOMINATOR: i64 = 10_000;
@@ -42,6 +44,9 @@ const FILL_BACKOFF_DURATION: Duration = Duration::from_secs(600);
 // Replace quotes when desired price drifts by >= 1 bps.
 const REPLACE_DRIFT_BPS: i64 = 1;
 const L1_MIN_REST: Duration = Duration::from_secs(3);
+const CANCEL_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+const CANCEL_RETRY_INTERVAL: Duration = Duration::from_secs(15);
+const CANCEL_RECONCILE_COOLDOWN: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RiskLevel {
@@ -157,6 +162,17 @@ enum QuoteSide {
     Ask,
 }
 
+#[derive(Debug, Clone)]
+pub enum OrderReconcileReason {
+    CancelTimeout,
+}
+
+#[derive(Debug, Clone)]
+pub struct OrderReconcileRequest {
+    pub cl_ord_id: String,
+    pub reason: OrderReconcileReason,
+}
+
 impl QuoteSide {
     fn to_order_side(self) -> Side {
         match self {
@@ -180,11 +196,26 @@ struct QuoteSlot {
 }
 
 #[derive(Debug, Clone)]
+struct PendingQuote {
+    price: Decimal,
+    qty: Decimal,
+}
+
+#[derive(Debug, Clone)]
+struct CancelInFlight {
+    sent_at: tokio::time::Instant,
+    deadline: tokio::time::Instant,
+    last_reconcile_at: Option<tokio::time::Instant>,
+    pending: Option<PendingQuote>,
+}
+
+#[derive(Debug, Clone)]
 struct LiveQuote {
     cl_ord_id: String,
     price: Decimal,
     qty: Decimal,
     placed_at: tokio::time::Instant,
+    cancel_in_flight: Option<CancelInFlight>,
 }
 
 #[derive(Debug, Clone)]
@@ -316,6 +347,8 @@ pub struct MarketMakingStrategy {
     inventory_qty: Decimal,
     max_non_usd_value: Decimal,
     bootstrap_side: Option<QuoteSide>,
+    order_reconcile_tx: mpsc::UnboundedSender<OrderReconcileRequest>,
+    metrics: Option<Arc<Mutex<TaskMetrics>>>,
 }
 
 impl MarketMakingStrategy {
@@ -325,6 +358,7 @@ impl MarketMakingStrategy {
     pub fn new() -> Self {
         let (tx, rx) = watch::channel(initial_symbol_price(""));
         drop(tx);
+        let (reconcile_tx, _reconcile_rx) = mpsc::unbounded_channel();
 
         let now = tokio::time::Instant::now();
         let mode = StrategyMode::aggressive_default();
@@ -352,6 +386,8 @@ impl MarketMakingStrategy {
             inventory_qty: Decimal::ZERO,
             max_non_usd_value: Decimal::ZERO,
             bootstrap_side: None,
+            order_reconcile_tx: reconcile_tx,
+            metrics: None,
         }
     }
 
@@ -361,6 +397,7 @@ impl MarketMakingStrategy {
         risk_level: RiskLevel,
         price_rx: watch::Receiver<SymbolPrice>,
         order_tracker: Arc<Mutex<OrderTracker>>,
+        order_reconcile_tx: mpsc::UnboundedSender<OrderReconcileRequest>,
         mode: StrategyMode,
         tier_count: u8,
         initial_position_qty: Decimal,
@@ -396,7 +433,13 @@ impl MarketMakingStrategy {
             inventory_qty: initial_position_qty,
             max_non_usd_value,
             bootstrap_side,
+            order_reconcile_tx,
+            metrics: None,
         }
+    }
+
+    pub fn set_metrics(&mut self, metrics: Arc<Mutex<TaskMetrics>>) {
+        self.metrics = Some(metrics);
     }
 
     pub(crate) fn tier_count_for_risk(risk_level: RiskLevel) -> u8 {
@@ -465,7 +508,7 @@ impl MarketMakingStrategy {
                 _ = shutdown.cancelled() => {
                     info!(symbol = %self.symbol, "strategy shutdown requested");
                     let now = tokio::time::Instant::now();
-                    self.cancel_all_quotes(executor).await;
+                    self.cancel_all_quotes(executor, now).await;
                     self.uptime_tracker.update(now, false);
                     return Ok(());
                 }
@@ -478,10 +521,14 @@ impl MarketMakingStrategy {
                         continue;
                     }
 
-                    let reference_price = {
+                    let (mark_price, reference_price) = {
                         let snapshot = self.price_rx.borrow();
-                        self.quote_reference_price(&snapshot)
+                        (snapshot.mark_price, self.quote_reference_price(&snapshot))
                     };
+                    if let Some(metrics) = self.metrics.as_ref() {
+                        let mut metrics = metrics.lock().await;
+                        metrics.record_price(mark_price);
+                    }
                     if self.live_quotes.is_empty() {
                         // Kick-start quoting when idle.
                         self.refresh_from_latest(executor, tokio::time::Instant::now()).await?;
@@ -492,7 +539,11 @@ impl MarketMakingStrategy {
                 }
                 _ = heartbeat.tick() => {
                     let snapshot = self.uptime_snapshot();
-                    info!(
+                    if let Some(metrics) = self.metrics.as_ref() {
+                        let mut metrics = metrics.lock().await;
+                        metrics.record_heartbeat();
+                    }
+                    debug!(
                         symbol = %self.symbol,
                         mode = ?self.mode,
                         live_quotes = self.live_quotes.len(),
@@ -530,13 +581,13 @@ impl MarketMakingStrategy {
             RiskState::Safe => {}
             RiskState::Caution { reasons } => {
                 warn!(symbol = %self.symbol, ?reasons, "risk caution; skipping quotes");
-                self.cancel_all_quotes(executor).await;
+                self.cancel_all_quotes(executor, now).await;
                 self.uptime_tracker.update(now, false);
                 return Ok(());
             }
             RiskState::Halt { reasons } => {
                 warn!(symbol = %self.symbol, ?reasons, "risk halt; skipping quotes");
-                self.cancel_all_quotes(executor).await;
+                self.cancel_all_quotes(executor, now).await;
                 self.uptime_tracker.update(now, false);
                 return Ok(());
             }
@@ -617,7 +668,7 @@ impl MarketMakingStrategy {
     ) -> Result<()> {
         self.base_qty = self.derived_base_qty(reference_price);
         if self.base_qty <= Decimal::ZERO {
-            self.cancel_all_quotes(executor).await;
+            self.cancel_all_quotes(executor, now).await;
             self.uptime_tracker.update(now, false);
             return Ok(());
         }
@@ -626,7 +677,7 @@ impl MarketMakingStrategy {
             for side in [QuoteSide::Bid, QuoteSide::Ask] {
                 if !self.bootstrap_allows_side(side) {
                     let slot = QuoteSlot { tier: *tier, side };
-                    self.cancel_slot_if_present(executor, slot).await;
+                    self.cancel_slot_if_present(executor, now, slot, None).await;
                     continue;
                 }
                 let slot = QuoteSlot { tier: *tier, side };
@@ -641,7 +692,12 @@ impl MarketMakingStrategy {
 
     fn is_uptime_active(&self) -> bool {
         // Require full bilateral ladder (active tiers) to count as uptime.
-        self.live_quotes.len() == self.active_tiers().len() * 2
+        let live = self
+            .live_quotes
+            .values()
+            .filter(|quote| quote.cancel_in_flight.is_none())
+            .count();
+        live == self.active_tiers().len() * 2
     }
 
     async fn refresh_slot(
@@ -652,14 +708,20 @@ impl MarketMakingStrategy {
         slot: QuoteSlot,
     ) -> Result<()> {
         let target_bps = self.target_bps_for_tier(slot.tier);
-        let desired_price = price_at_bps(reference_price, slot.side.to_order_side(), target_bps);
-        let desired_price = self.align_price_for_order(desired_price);
+        let mut desired_price = price_at_bps(reference_price, slot.side.to_order_side(), target_bps);
+        desired_price = self.align_price_for_order(desired_price);
         let desired_qty = self.desired_qty_for_slot(slot.tier, slot.side, target_bps, now);
         let capped_qty = self.cap_qty_for_inventory(slot.side, desired_qty, reference_price);
         let backoff_active = self.is_backoff_active(slot.side, now);
 
         if capped_qty <= Decimal::ZERO || desired_price <= Decimal::ZERO {
-            self.cancel_slot_if_present(executor, slot).await;
+            if let Some(existing) = self.live_quotes.get_mut(&slot)
+                && let Some(cancel) = existing.cancel_in_flight.as_mut()
+            {
+                cancel.pending = None;
+                return Ok(());
+            }
+            self.cancel_slot_if_present(executor, now, slot, None).await;
             return Ok(());
         }
 
@@ -682,6 +744,14 @@ impl MarketMakingStrategy {
                         return Ok(());
                     }
                     OrderState::Cancelled { .. } | OrderState::Failed { .. } => {
+                        if let Some(pending) = existing
+                            .cancel_in_flight
+                            .as_ref()
+                            .and_then(|cancel| cancel.pending.clone())
+                        {
+                            desired_price = pending.price;
+                            effective_qty = pending.qty;
+                        }
                         self.live_quotes.remove(&slot);
                     }
                     _ => {}
@@ -690,21 +760,102 @@ impl MarketMakingStrategy {
 
             effective_qty = self.align_qty_for_order(effective_qty);
             if effective_qty <= Decimal::ZERO {
-                self.cancel_slot_if_present(executor, slot).await;
+                if let Some(existing) = self.live_quotes.get_mut(&slot)
+                    && let Some(cancel) = existing.cancel_in_flight.as_mut()
+                {
+                    cancel.pending = None;
+                    return Ok(());
+                }
+                self.cancel_slot_if_present(executor, now, slot, None).await;
                 return Ok(());
             }
 
-            if let Some(still_live) = self.live_quotes.get(&slot) {
-                let wants_reduce = backoff_active && capped_qty < still_live.qty;
+            let mut has_live = false;
+            let mut cancel_action: Option<(String, bool, bool)> = None;
+            if let Some(still_live) = self.live_quotes.get_mut(&slot) {
+                has_live = true;
+                if let Some(cancel) = still_live.cancel_in_flight.as_mut() {
+                    let mut request_reconcile = false;
+                    let mut retry_cancel = false;
+
+                    cancel.pending = Some(PendingQuote {
+                        price: desired_price,
+                        qty: effective_qty,
+                    });
+
+                    if now >= cancel.deadline {
+                        if cancel
+                            .last_reconcile_at
+                            .map_or(true, |last| {
+                                now.saturating_duration_since(last) >= CANCEL_RECONCILE_COOLDOWN
+                            })
+                        {
+                            request_reconcile = true;
+                            cancel.last_reconcile_at = Some(now);
+                        }
+
+                        if now.saturating_duration_since(cancel.sent_at) >= CANCEL_RETRY_INTERVAL {
+                            retry_cancel = true;
+                            cancel.sent_at = now;
+                            cancel.deadline = now + CANCEL_ACK_TIMEOUT;
+                        }
+                    }
+
+                    cancel_action = Some((still_live.cl_ord_id.clone(), request_reconcile, retry_cancel));
+                }
+            }
+
+            if let Some((cl_ord_id, request_reconcile, retry_cancel)) = cancel_action {
+                if request_reconcile {
+                    self.request_reconcile(OrderReconcileRequest {
+                        cl_ord_id: cl_ord_id.clone(),
+                        reason: OrderReconcileReason::CancelTimeout,
+                    });
+                }
+
+                if retry_cancel {
+                    let req = CancelOrderRequest {
+                        order_id: None,
+                        cl_ord_id: Some(cl_ord_id.clone()),
+                    };
+
+                    match executor.cancel_order(req).await {
+                        Ok(resp) if resp.code == 0 => {
+                            info!(symbol = %self.symbol, cl_ord_id = %cl_ord_id, "cancel retry requested");
+                        }
+                        Ok(resp) => {
+                            warn!(
+                                symbol = %self.symbol,
+                                cl_ord_id = %cl_ord_id,
+                                code = resp.code,
+                                message = %resp.message,
+                                "cancel retry returned non-zero code"
+                            );
+                        }
+                        Err(err) => {
+                            warn!(symbol = %self.symbol, cl_ord_id = %cl_ord_id, error = %err, "cancel retry http failed");
+                        }
+                    }
+                }
+                return Ok(());
+            }
+
+            if has_live {
+                let (still_price, still_qty, placed_at) = match self.live_quotes.get(&slot) {
+                    Some(quote) => (quote.price, quote.qty, quote.placed_at),
+                    None => return Ok(()),
+                };
+
+                let wants_reduce = backoff_active && capped_qty < still_qty;
                 let (band_min, band_max) = self.quote_band_for_tier(slot.tier);
                 let current_bps =
-                    bps_from_price(reference_price, slot.side.to_order_side(), still_live.price);
+                    bps_from_price(reference_price, slot.side.to_order_side(), still_price);
                 let outside_band = current_bps < band_min || current_bps > band_max;
                 let drift_replace = if slot.tier == Tier::L1 {
-                    let age = now.saturating_duration_since(still_live.placed_at);
+                    let age = now.saturating_duration_since(placed_at);
                     if age >= L1_MIN_REST {
                         should_replace(
-                            still_live.price,
+                            still_price,
                             desired_price,
                             self.replace_drift_threshold_bps(slot.tier),
                         )
@@ -716,12 +867,19 @@ impl MarketMakingStrategy {
                 };
 
                 if outside_band || drift_replace || wants_reduce {
-                    self.cancel_slot_if_present(executor, slot).await;
-                    self.place_slot(executor, now, slot, desired_price, effective_qty)
-                        .await?;
+                    self.cancel_slot_if_present(
+                        executor,
+                        now,
+                        slot,
+                        Some(PendingQuote {
+                            price: desired_price,
+                            qty: effective_qty,
+                        }),
+                    )
+                    .await;
                 } else {
                     // Keep current quote; update qty bookkeeping when partially filled.
-                    if effective_qty != still_live.qty
+                    if effective_qty != still_qty
                         && let Some(q) = self.live_quotes.get_mut(&slot)
                     {
                         q.qty = effective_qty;
@@ -733,13 +891,24 @@ impl MarketMakingStrategy {
 
         effective_qty = self.align_qty_for_order(effective_qty);
         if effective_qty <= Decimal::ZERO {
-            self.cancel_slot_if_present(executor, slot).await;
+            self.cancel_slot_if_present(executor, now, slot, None).await;
             return Ok(());
         }
 
-        self.place_slot(executor, now, slot, desired_price, effective_qty)
+        self.place_slot(
+            executor,
+            now,
+            slot,
+            desired_price,
+            effective_qty,
+            reference_price,
+        )
             .await?;
         Ok(())
+    }
+
+    fn request_reconcile(&self, request: OrderReconcileRequest) {
+        let _ = self.order_reconcile_tx.send(request);
     }
 
     fn target_bps_for_tier(&self, tier: Tier) -> Decimal {
@@ -791,6 +960,12 @@ impl MarketMakingStrategy {
     }
 
     fn quote_reference_price(&self, snapshot: &SymbolPrice) -> Decimal {
+        if let Some(mid_price) = snapshot.mid_price {
+            if mid_price > Decimal::ZERO {
+                return mid_price;
+            }
+        }
+
         if let Some(last_price) = snapshot.last_price {
             if last_price > Decimal::ZERO {
                 return last_price;
@@ -991,6 +1166,7 @@ impl MarketMakingStrategy {
         slot: QuoteSlot,
         price: Decimal,
         qty: Decimal,
+        reference_price: Decimal,
     ) -> Result<()> {
         let price = self.align_price_for_order(price);
         if price <= Decimal::ZERO {
@@ -1042,6 +1218,7 @@ impl MarketMakingStrategy {
                     symbol = %self.symbol,
                     side = %slot.side.as_str(),
                     tier = %slot.tier.as_str(),
+                    reference_price = %reference_price,
                     %price,
                     %qty,
                     "placed PostOnly quote"
@@ -1054,6 +1231,7 @@ impl MarketMakingStrategy {
                         price,
                         qty,
                         placed_at: now,
+                        cancel_in_flight: None,
                     },
                 );
             }
@@ -1098,12 +1276,25 @@ impl MarketMakingStrategy {
         Ok(())
     }
 
-    async fn cancel_slot_if_present(&mut self, executor: &dyn OrderExecutor, slot: QuoteSlot) {
-        let Some(existing) = self.live_quotes.remove(&slot) else {
+    async fn cancel_slot_if_present(
+        &mut self,
+        executor: &dyn OrderExecutor,
+        now: tokio::time::Instant,
+        slot: QuoteSlot,
+        pending: Option<PendingQuote>,
+    ) {
+        let Some(existing) = self.live_quotes.get_mut(&slot) else {
             return;
         };
 
-        let cl_ord_id = existing.cl_ord_id;
+        if let Some(cancel) = existing.cancel_in_flight.as_mut() {
+            if pending.is_some() {
+                cancel.pending = pending;
+            }
+            return;
+        }
+
+        let cl_ord_id = existing.cl_ord_id.clone();
 
         {
             let mut tracker = self.order_tracker.lock().await;
@@ -1132,12 +1323,19 @@ impl MarketMakingStrategy {
                 warn!(symbol = %self.symbol, cl_ord_id = %cl_ord_id, error = %err, "cancel_order http failed");
             }
         }
+
+        existing.cancel_in_flight = Some(CancelInFlight {
+            sent_at: now,
+            deadline: now + CANCEL_ACK_TIMEOUT,
+            last_reconcile_at: None,
+            pending,
+        });
     }
 
-    async fn cancel_all_quotes(&mut self, executor: &dyn OrderExecutor) {
+    async fn cancel_all_quotes(&mut self, executor: &dyn OrderExecutor, now: tokio::time::Instant) {
         let slots: Vec<QuoteSlot> = self.live_quotes.keys().copied().collect();
         for slot in slots {
-            self.cancel_slot_if_present(executor, slot).await;
+            self.cancel_slot_if_present(executor, now, slot, None).await;
         }
     }
 
@@ -1256,9 +1454,16 @@ mod tests {
 
     use crate::risk::RiskManager;
     use std::str::FromStr;
+    use standx_point_adapter::ws::message::OrderUpdateData;
+    use tokio::sync::mpsc;
 
     fn dec(value: &str) -> Decimal {
         Decimal::from_str(value).expect("valid decimal")
+    }
+
+    fn reconcile_tx() -> mpsc::UnboundedSender<OrderReconcileRequest> {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        tx
     }
 
     #[derive(Debug, Default)]
@@ -1346,6 +1551,7 @@ mod tests {
             RiskLevel::Low,
             rx,
             Arc::new(Mutex::new(OrderTracker::new())),
+            reconcile_tx(),
             StrategyMode::aggressive_default(),
             5,
             Decimal::ONE,
@@ -1410,6 +1616,7 @@ mod tests {
             RiskLevel::Low,
             rx,
             Arc::new(Mutex::new(OrderTracker::new())),
+            reconcile_tx(),
             StrategyMode::aggressive_default(),
             5,
             Decimal::ONE,
@@ -1466,6 +1673,7 @@ mod tests {
             RiskLevel::Low,
             rx,
             tracker,
+            reconcile_tx(),
             StrategyMode::aggressive_default(),
             5,
             Decimal::ZERO,
@@ -1504,6 +1712,7 @@ mod tests {
             RiskLevel::Low,
             rx,
             Arc::new(Mutex::new(OrderTracker::new())),
+            reconcile_tx(),
             StrategyMode::aggressive_default(),
             5,
             dec("10"),
@@ -1542,6 +1751,7 @@ mod tests {
             RiskLevel::Low,
             rx,
             tracker.clone(),
+            reconcile_tx(),
             StrategyMode::aggressive_default(),
             5,
             Decimal::ONE,
@@ -1649,6 +1859,7 @@ mod tests {
             RiskLevel::Low,
             rx,
             tracker.clone(),
+            reconcile_tx(),
             StrategyMode::aggressive_default(),
             3,
             Decimal::ONE,
@@ -1713,6 +1924,30 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(executor.cancel_count().await > 0);
+
+        {
+            let update = OrderUpdateData {
+                id: 777,
+                symbol: "BTC-USD".to_string(),
+                side: "buy".to_string(),
+                status: "cancelled".to_string(),
+                qty: quote.qty.to_string(),
+                fill_qty: "0".to_string(),
+                price: quote.price.to_string(),
+                order_type: "limit".to_string(),
+            };
+            let mut guard = tracker.lock().await;
+            guard
+                .handle_ws_update(&update, std::time::Instant::now())
+                .unwrap();
+        }
+
+        strategy
+            .refresh_from_latest(&executor, tokio::time::Instant::now())
+            .await
+            .unwrap();
+
         let orders = executor.new_orders.lock().await.clone();
         let l1_bid = orders
             .into_iter()
@@ -1768,6 +2003,7 @@ mod tests {
             RiskLevel::Low,
             rx,
             Arc::new(Mutex::new(OrderTracker::new())),
+            reconcile_tx(),
             StrategyMode::aggressive_default(),
             3,
             Decimal::ONE,

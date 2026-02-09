@@ -178,6 +178,14 @@ impl OrderTracker {
         self.orders.len()
     }
 
+    /// Returns the number of non-terminal orders.
+    pub fn open_order_count(&self) -> usize {
+        self.orders
+            .values()
+            .filter(|order| !order.state.is_terminal())
+            .count()
+    }
+
     /// Returns true when no orders are tracked.
     pub fn is_empty(&self) -> bool {
         self.orders.is_empty()
