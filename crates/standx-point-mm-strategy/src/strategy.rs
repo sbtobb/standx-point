@@ -895,7 +895,14 @@ impl MarketMakingStrategy {
             return Ok(());
         }
 
-        self.place_slot(executor, now, slot, desired_price, effective_qty)
+        self.place_slot(
+            executor,
+            now,
+            slot,
+            desired_price,
+            effective_qty,
+            reference_price,
+        )
             .await?;
         Ok(())
     }
@@ -953,6 +960,12 @@ impl MarketMakingStrategy {
     }
 
     fn quote_reference_price(&self, snapshot: &SymbolPrice) -> Decimal {
+        if let Some(mid_price) = snapshot.mid_price {
+            if mid_price > Decimal::ZERO {
+                return mid_price;
+            }
+        }
+
         if let Some(last_price) = snapshot.last_price {
             if last_price > Decimal::ZERO {
                 return last_price;
@@ -1153,6 +1166,7 @@ impl MarketMakingStrategy {
         slot: QuoteSlot,
         price: Decimal,
         qty: Decimal,
+        reference_price: Decimal,
     ) -> Result<()> {
         let price = self.align_price_for_order(price);
         if price <= Decimal::ZERO {
@@ -1204,6 +1218,7 @@ impl MarketMakingStrategy {
                     symbol = %self.symbol,
                     side = %slot.side.as_str(),
                     tier = %slot.tier.as_str(),
+                    reference_price = %reference_price,
                     %price,
                     %qty,
                     "placed PostOnly quote"
