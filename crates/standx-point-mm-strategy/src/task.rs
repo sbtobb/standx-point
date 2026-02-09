@@ -815,17 +815,6 @@ impl Task {
             task_id,
             account_jwt,
             symbol,
-            price_rx,
-            symbol_cache,
-            risk_level,
-            self.metrics.clone(),
-            guard_shutdown.clone(),
-        );
-        let order_future = Self::order_ws_loop(
-            id,
-            task_id,
-            account_jwt,
-            symbol,
             order_tracker_ws,
             self.metrics.clone(),
             order_shutdown.clone(),
