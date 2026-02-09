@@ -61,6 +61,23 @@ pub struct RiskConfig {
     /// Budget in USD used for quoting
     #[serde(default = "default_budget_usd", alias = "max_position_usd")]
     pub budget_usd: String,
+    /// Enable position guard close orders (default: false)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard_close_enabled: Option<bool>,
+    /// Take-profit distance in bps (optional)
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "take_profit_bps"
+    )]
+    pub tp_bps: Option<String>,
+    /// Stop-loss distance in bps (optional)
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "stop_loss_bps"
+    )]
+    pub sl_bps: Option<String>,
 }
 
 impl Default for RiskConfig {
@@ -68,6 +85,9 @@ impl Default for RiskConfig {
         Self {
             level: default_risk_level(),
             budget_usd: default_budget_usd(),
+            guard_close_enabled: None,
+            tp_bps: None,
+            sl_bps: None,
         }
     }
 }

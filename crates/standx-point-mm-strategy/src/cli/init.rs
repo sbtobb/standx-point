@@ -8,7 +8,7 @@
 
 use anyhow::{Context, Result};
 use console::style;
-use dialoguer::{Input, Select, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Input, Select};
 use std::path::PathBuf;
 
 use standx_point_mm_strategy::config::{AccountConfig, RiskConfig, StrategyConfig, TaskConfig};
@@ -86,6 +86,9 @@ pub fn run_init(output: PathBuf) -> Result<()> {
             risk: RiskConfig {
                 level: risk_level,
                 budget_usd,
+                guard_close_enabled: None,
+                tp_bps: None,
+                sl_bps: None,
             },
         }],
     };

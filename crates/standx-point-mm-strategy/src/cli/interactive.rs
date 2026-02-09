@@ -513,6 +513,9 @@ pub(crate) async fn build_strategy_config(
             risk: RiskConfig {
                 level: task.risk_level.clone(),
                 budget_usd: task.budget_usd.clone(),
+                guard_close_enabled: None,
+                tp_bps: None,
+                sl_bps: None,
             },
         };
         configs.push(task_config);

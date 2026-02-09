@@ -9,3 +9,6 @@ tasks:
     risk:
       level: "low"
       budget_usd: "50000"
+      guard_close_enabled: false
+      tp_bps: "30"
+      sl_bps: "20"

@@ -316,9 +316,17 @@ fn load_env_config() -> Result<Option<StrategyConfig>> {
     let symbol = env::var("STANDX_MM_SYMBOL").ok();
     let risk_level = env::var("STANDX_MM_RISK_LEVEL").ok();
     let budget_usd = env::var("STANDX_MM_BUDGET_USD").ok();
+    let guard_close_enabled = parse_optional_bool(env::var("STANDX_MM_GUARD_CLOSE_ENABLED").ok())?;
+    let tp_bps = env::var("STANDX_MM_TP_BPS").ok();
+    let sl_bps = env::var("STANDX_MM_SL_BPS").ok();
 
-    let any_set =
-        private_key.is_some() || symbol.is_some() || risk_level.is_some() || budget_usd.is_some();
+    let any_set = private_key.is_some()
+        || symbol.is_some()
+        || risk_level.is_some()
+        || budget_usd.is_some()
+        || guard_close_enabled.is_some()
+        || tp_bps.is_some()
+        || sl_bps.is_some();
     if !any_set {
         return Ok(None);
     }
@@ -350,6 +358,9 @@ fn load_env_config() -> Result<Option<StrategyConfig>> {
             risk: standx_point_mm_strategy::config::RiskConfig {
                 level: risk_level,
                 budget_usd,
+                guard_close_enabled,
+                tp_bps,
+                sl_bps,
             },
         }],
     };
@@ -364,6 +375,23 @@ fn parse_chain(raw: Option<String>) -> Result<Chain> {
         "solana" => Ok(Chain::Solana),
         other => Err(anyhow!(
             "invalid STANDX_MM_CHAIN: {other} (use bsc or solana)"
+        )),
+    }
+}
+
+fn parse_optional_bool(raw: Option<String>) -> Result<Option<bool>> {
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    match normalized.as_str() {
+        "true" | "1" | "yes" | "y" => Ok(Some(true)),
+        "false" | "0" | "no" | "n" => Ok(Some(false)),
+        _ => Err(anyhow!(
+            "invalid STANDX_MM_GUARD_CLOSE_ENABLED: {value} (use true/false/1/0)"
         )),
     }
 }
@@ -411,6 +439,8 @@ fn log_strategy_config(config: &StrategyConfig) {
             account_id = %task.account_id,
             risk_level = %task.risk.level,
             budget_usd = %task.risk.budget_usd,
+            tp_bps = ?task.risk.tp_bps,
+            sl_bps = ?task.risk.sl_bps,
             "strategy task parameters"
         );
     }

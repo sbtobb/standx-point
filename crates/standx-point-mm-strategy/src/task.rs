@@ -69,6 +69,66 @@ fn ensure_panic_hook_installed() {
     });
 }
 
+fn parse_optional_bps(
+    value: &Option<String>,
+    field: &str,
+    task_id: &str,
+) -> Result<Option<Decimal>> {
+    let Some(raw) = value.as_ref() else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let bps =
+        Decimal::from_str(trimmed).with_context(|| format!("parse {field} task_id={task_id}"))?;
+    if bps <= Decimal::ZERO {
+        return Err(anyhow!("{field} must be > 0 for task_id={task_id}"));
+    }
+    Ok(Some(bps))
+}
+
+fn default_tp_sl_bps_for_risk(
+    level: RiskLevel,
+    symbol_info: Option<&SymbolInfo>,
+) -> (Option<Decimal>, Option<Decimal>) {
+    let fee_bps = fee_bps_total_from_symbol_info(symbol_info);
+    if fee_bps <= Decimal::ZERO {
+        return (None, None);
+    }
+
+    let sl_multiplier = match level {
+        RiskLevel::Low => Decimal::from(2),
+        RiskLevel::Medium => Decimal::from(3),
+        RiskLevel::High => Decimal::from(4),
+        RiskLevel::XHigh => Decimal::from(5),
+    };
+    let tp_bps = fee_bps;
+    let sl_bps = fee_bps * sl_multiplier;
+    (Some(tp_bps), Some(sl_bps))
+}
+
+fn fee_bps_total_from_symbol_info(symbol_info: Option<&SymbolInfo>) -> Decimal {
+    let maker_fee = symbol_info
+        .map(|info| info.maker_fee)
+        .unwrap_or(Decimal::ZERO);
+    let taker_fee = symbol_info
+        .map(|info| info.taker_fee)
+        .unwrap_or(Decimal::ZERO);
+    let total_fee = maker_fee + taker_fee;
+    if total_fee > Decimal::ZERO {
+        total_fee * Decimal::from(BPS_DENOMINATOR)
+    } else {
+        Decimal::from(DEFAULT_FEE_BPS * 2)
+    }
+}
+
+async fn guard_loop_disabled(shutdown: CancellationToken) -> Result<()> {
+    shutdown.cancelled().await;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
     Init,
@@ -176,7 +236,8 @@ async fn resolve_account_auth(
         Chain::Bsc => {
             let wallet = EvmWalletSigner::new(private_key)
                 .map_err(|err| anyhow!("invalid EVM private key: {err}"))?;
-            let wallet_address = standx_point_adapter::auth::WalletSigner::address(&wallet).to_string();
+            let wallet_address =
+                standx_point_adapter::auth::WalletSigner::address(&wallet).to_string();
             let login = auth
                 .authenticate(&wallet, DEFAULT_JWT_EXPIRES_SECONDS)
                 .await
@@ -186,7 +247,8 @@ async fn resolve_account_auth(
         Chain::Solana => {
             let wallet = SolanaWalletSigner::new(private_key)
                 .map_err(|err| anyhow!("invalid Solana private key: {err}"))?;
-            let wallet_address = standx_point_adapter::auth::WalletSigner::address(&wallet).to_string();
+            let wallet_address =
+                standx_point_adapter::auth::WalletSigner::address(&wallet).to_string();
             let login = auth
                 .authenticate(&wallet, DEFAULT_JWT_EXPIRES_SECONDS)
                 .await
@@ -648,6 +710,11 @@ impl Task {
             .map_err(|_| anyhow!("invalid risk level: {}", self.config.risk.level))?;
         let budget_usd = Decimal::from_str(&self.config.risk.budget_usd)
             .with_context(|| format!("parse risk.budget_usd task_id={}", self.config.id))?;
+        let user_tp_bps =
+            parse_optional_bps(&self.config.risk.tp_bps, "risk.tp_bps", &self.config.id)?;
+        let user_sl_bps =
+            parse_optional_bps(&self.config.risk.sl_bps, "risk.sl_bps", &self.config.id)?;
+        let guard_close_enabled = self.config.risk.guard_close_enabled.unwrap_or(false);
         let tier_count = MarketMakingStrategy::tier_count_for_risk(risk_level);
         let initial_position_qty = snapshot
             .positions
@@ -662,10 +729,17 @@ impl Task {
         let order_tracker_reconcile = order_tracker.clone();
         let (reconcile_tx, reconcile_rx) = mpsc::unbounded_channel();
         let mode = StrategyMode::aggressive_for_risk(risk_level);
+        let (default_tp_bps, default_sl_bps) =
+            default_tp_sl_bps_for_risk(risk_level, snapshot.symbol_info.as_ref());
+        let tp_bps = user_tp_bps.or(default_tp_bps);
+        let sl_bps = user_sl_bps.or(default_sl_bps);
+
         let mut strategy = MarketMakingStrategy::new_with_params(
             self.config.symbol.clone(),
             budget_usd,
             risk_level,
+            tp_bps,
+            sl_bps,
             self.price_rx.clone(),
             order_tracker,
             reconcile_tx,
@@ -718,18 +792,24 @@ impl Task {
         let symbol = &self.config.symbol;
         let price_rx = self.price_rx.clone();
         let symbol_cache = self.symbol_cache.clone();
-        let guard_future = Self::position_guard_ws_loop(
-            client,
-            id,
-            task_id,
-            account_jwt,
-            symbol,
-            price_rx,
-            symbol_cache,
-            risk_level,
-            self.metrics.clone(),
-            guard_shutdown.clone(),
-        );
+        let guard_future: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<()>> + Send + '_>,
+        > = if guard_close_enabled {
+            Box::pin(Self::position_guard_ws_loop(
+                client,
+                id,
+                task_id,
+                account_jwt,
+                symbol,
+                price_rx,
+                symbol_cache,
+                risk_level,
+                self.metrics.clone(),
+                guard_shutdown.clone(),
+            ))
+        } else {
+            Box::pin(guard_loop_disabled(guard_shutdown.clone()))
+        };
         let order_future = Self::order_ws_loop(
             id,
             task_id,
@@ -2208,6 +2288,9 @@ fn dummy_task_config() -> TaskConfig {
         risk: crate::config::RiskConfig {
             level: "low".to_string(),
             budget_usd: "0".to_string(),
+            guard_close_enabled: None,
+            tp_bps: None,
+            sl_bps: None,
         },
     }
 }
@@ -2691,6 +2774,9 @@ mod tests {
             risk: crate::config::RiskConfig {
                 level: "low".to_string(),
                 budget_usd: "0".to_string(),
+                guard_close_enabled: None,
+                tp_bps: None,
+                sl_bps: None,
             },
         }
     }
