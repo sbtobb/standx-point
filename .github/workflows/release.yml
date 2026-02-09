@@ -6,8 +6,19 @@ on:
       - master
 
 jobs:
+  prepare_release:
+    name: prepare-release-tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.tag.outputs.tag_name }}
+    steps:
+      - name: Generate release tag
+        id: tag
+        run: echo "tag_name=v$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
+
   build:
     name: build-and-release (${{ matrix.os }})
+    needs: prepare_release
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write  # 允许创建 release
@@ -42,6 +53,6 @@ jobs:
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: master-${{ github.run_number }}
+          tag_name: ${{ needs.prepare_release.outputs.tag_name }}
           target_commitish: ${{ github.sha }}
           files: dist/*

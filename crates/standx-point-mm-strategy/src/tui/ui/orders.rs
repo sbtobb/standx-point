@@ -30,15 +30,42 @@ fn parse_decimal_value(value: &Value) -> Option<Decimal> {
     }
 }
 
-fn format_payload_decimal(payload: Option<&Value>, keys: &[&str]) -> String {
-    let Some(payload) = payload else {
-        return "-".to_string();
-    };
+fn find_decimal_by_keys(value: &Value, keys: &[&str]) -> Option<Decimal> {
+    if let Some(decimal) = parse_decimal_value(value) {
+        return Some(decimal);
+    }
 
-    for key in keys {
-        if let Some(decimal) = payload.get(*key).and_then(parse_decimal_value) {
-            return format_decimal(decimal, 4);
+    match value {
+        Value::Object(map) => {
+            for key in keys {
+                if let Some(decimal) = map.get(*key).and_then(parse_decimal_value) {
+                    return Some(decimal);
+                }
+            }
+            for nested in map.values() {
+                if let Some(decimal) = find_decimal_by_keys(nested, keys) {
+                    return Some(decimal);
+                }
+            }
+            None
         }
+        Value::Array(items) => {
+            for item in items {
+                if let Some(decimal) = find_decimal_by_keys(item, keys) {
+                    return Some(decimal);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn format_tp_sl_price(explicit: Option<Decimal>, payload: Option<&Value>, keys: &[&str]) -> String {
+    if let Some(decimal) =
+        explicit.or_else(|| payload.and_then(|value| find_decimal_by_keys(value, keys)))
+    {
+        return format_decimal(decimal, 4);
     }
 
     "-".to_string()
@@ -86,8 +113,28 @@ pub(in crate::tui) fn draw_open_orders_table(
             .map(|p| format_decimal(p, 4))
             .unwrap_or_else(|| "-".to_string());
         let payload_value = parse_payload_value(order.payload.as_deref());
-        let tp = format_payload_decimal(payload_value.as_ref(), &["tp_price", "tpPrice", "tp"]);
-        let sl = format_payload_decimal(payload_value.as_ref(), &["sl_price", "slPrice", "sl"]);
+        let tp = format_tp_sl_price(
+            order.tp_price,
+            payload_value.as_ref(),
+            &[
+                "tp_price",
+                "tpPrice",
+                "take_profit_price",
+                "takeProfitPrice",
+                "tp",
+            ],
+        );
+        let sl = format_tp_sl_price(
+            order.sl_price,
+            payload_value.as_ref(),
+            &[
+                "sl_price",
+                "slPrice",
+                "stop_loss_price",
+                "stopLossPrice",
+                "sl",
+            ],
+        );
         let reduce_only = if order.reduce_only { "Yes" } else { "No" };
         let created_time = format_order_time(&order.created_at);
         let price_cell = format!("{price:>12}");
@@ -162,4 +209,38 @@ pub(in crate::tui) fn draw_open_orders_table(
             .title("Open Orders"),
     );
     frame.render_widget(table, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_tp_sl_price_prefers_explicit_field() {
+        let payload = serde_json::json!({ "tp_price": "100.0" });
+
+        let formatted = format_tp_sl_price(
+            Some(Decimal::from_str("101.0").unwrap()),
+            Some(&payload),
+            &["tp_price"],
+        );
+
+        assert_eq!(formatted, "101.0000");
+    }
+
+    #[test]
+    fn format_tp_sl_price_reads_nested_payload_fields() {
+        let payload = serde_json::json!({
+            "risk": {
+                "tpPrice": "52000",
+                "slPrice": "48000"
+            }
+        });
+
+        let tp = format_tp_sl_price(None, Some(&payload), &["tp_price", "tpPrice"]);
+        let sl = format_tp_sl_price(None, Some(&payload), &["sl_price", "slPrice"]);
+
+        assert_eq!(tp, "52000.0000");
+        assert_eq!(sl, "48000.0000");
+    }
 }

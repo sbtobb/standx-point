@@ -41,7 +41,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const SURVIVAL_AFTER_FILL: Duration = Duration::from_secs(60);
 const FILL_BACKOFF_DURATION: Duration = Duration::from_secs(600);
 
-// Replace quotes when desired price drifts by >= 1 bps.
+// Non-L1 replace threshold (bps).
 const REPLACE_DRIFT_BPS: i64 = 1;
 const L1_MIN_REST: Duration = Duration::from_secs(3);
 const CANCEL_ACK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -862,7 +862,7 @@ impl MarketMakingStrategy {
                 let outside_band = current_bps < band_min || current_bps > band_max;
                 let drift_replace = if slot.tier == Tier::L1 {
                     let age = now.saturating_duration_since(placed_at);
-                    if age >= L1_MIN_REST {
+                    if l1_drift_check_ready(age, current_bps) {
                         should_replace(
                             still_price,
                             desired_price,
@@ -953,7 +953,7 @@ impl MarketMakingStrategy {
 
             if slot.tier == Tier::L1 {
                 let age = now.saturating_duration_since(quote.placed_at);
-                if age >= L1_MIN_REST {
+                if l1_drift_check_ready(age, current_bps) {
                     let target_bps = self.target_bps_for_tier(slot.tier);
                     let desired_price =
                         price_at_bps(reference_price, slot.side.to_order_side(), target_bps);
@@ -1163,7 +1163,7 @@ impl MarketMakingStrategy {
 
     fn replace_drift_threshold_bps(&self, tier: Tier) -> Decimal {
         match tier {
-            Tier::L1 => Decimal::new(25, 1),
+            Tier::L1 => Decimal::new(5, 1),
             _ => Decimal::from(REPLACE_DRIFT_BPS),
         }
     }
@@ -1482,6 +1482,10 @@ fn should_replace(current_price: Decimal, desired_price: Decimal, threshold_bps:
     drift_bps >= threshold_bps
 }
 
+fn l1_drift_check_ready(age: Duration, current_bps: Decimal) -> bool {
+    age >= L1_MIN_REST || current_bps < Decimal::from(2)
+}
+
 fn fill_backoff_multiplier() -> Decimal {
     Decimal::new(3, 1)
 }
@@ -1497,6 +1501,25 @@ mod tests {
 
     fn dec(value: &str) -> Decimal {
         Decimal::from_str(value).expect("valid decimal")
+    }
+
+    #[test]
+    fn strategy_l1_replace_drift_threshold_is_half_bps() {
+        let strategy = MarketMakingStrategy::new();
+        assert_eq!(strategy.replace_drift_threshold_bps(Tier::L1), dec("0.5"));
+    }
+
+    #[test]
+    fn l1_drift_check_ready_bypasses_rest_when_within_two_bps() {
+        assert!(l1_drift_check_ready(std::time::Duration::from_secs(1), dec("1.99")));
+        assert!(!l1_drift_check_ready(std::time::Duration::from_secs(1), dec("2")));
+        assert!(l1_drift_check_ready(std::time::Duration::from_secs(3), dec("8")));
+    }
+
+    #[test]
+    fn should_replace_supports_half_bps_threshold() {
+        assert!(should_replace(dec("100"), dec("100.005"), dec("0.5")));
+        assert!(!should_replace(dec("100"), dec("100.004"), dec("0.5")));
     }
 
     fn reconcile_tx() -> mpsc::UnboundedSender<OrderReconcileRequest> {
@@ -1836,6 +1859,8 @@ mod tests {
             margin: Decimal::ZERO,
             order_type: OrderType::Limit,
             payload: None,
+            tp_price: None,
+            sl_price: None,
             position_id: 0,
             price: Some(filled_quote.price),
             qty: filled_quote.qty,
@@ -1944,6 +1969,8 @@ mod tests {
             margin: Decimal::ZERO,
             order_type: OrderType::Limit,
             payload: None,
+            tp_price: None,
+            sl_price: None,
             position_id: 0,
             price: Some(quote.price),
             qty: quote.qty,
