@@ -16,6 +16,7 @@
 
 use crate::config::{AccountConfig, StrategyConfig, TaskConfig};
 use crate::market_data::MarketDataHub;
+use crate::metrics::{TaskMetrics, TaskMetricsSnapshot};
 use crate::order_state::OrderTracker;
 use crate::strategy::{MarketMakingStrategy, OrderReconcileRequest, RiskLevel, StrategyMode};
 use anyhow::{Context as _, Result, anyhow};
@@ -130,6 +131,8 @@ impl AccountAuth {
 #[derive(Debug)]
 pub struct TaskManager {
     tasks: HashMap<String, ManagedTask>,
+    task_configs: HashMap<String, TaskConfig>,
+    task_metrics: HashMap<String, Arc<Mutex<TaskMetrics>>>,
 
     #[cfg_attr(test, allow(dead_code))]
     market_data_hub: std::sync::Arc<Mutex<MarketDataHub>>,
@@ -210,6 +213,8 @@ impl TaskManager {
     pub fn new() -> Self {
         Self {
             tasks: HashMap::new(),
+            task_configs: HashMap::new(),
+            task_metrics: HashMap::new(),
             market_data_hub: std::sync::Arc::new(Mutex::new(MarketDataHub::new())),
             symbol_cache: std::sync::Arc::new(Mutex::new(SymbolCache::default())),
             shutdown: CancellationToken::new(),
@@ -222,6 +227,8 @@ impl TaskManager {
     pub fn with_market_data_hub(market_data_hub: std::sync::Arc<Mutex<MarketDataHub>>) -> Self {
         Self {
             tasks: HashMap::new(),
+            task_configs: HashMap::new(),
+            task_metrics: HashMap::new(),
             market_data_hub,
             symbol_cache: std::sync::Arc::new(Mutex::new(SymbolCache::default())),
             shutdown: CancellationToken::new(),
@@ -233,6 +240,10 @@ impl TaskManager {
 
     pub fn shutdown_token(&self) -> CancellationToken {
         self.shutdown.clone()
+    }
+
+    pub fn market_data_hub(&self) -> std::sync::Arc<Mutex<MarketDataHub>> {
+        self.market_data_hub.clone()
     }
 
     pub fn runtime_status(&self, task_id: &str) -> Option<TaskRuntimeStatus> {
@@ -257,6 +268,19 @@ impl TaskManager {
                 (task_id.clone(), status)
             })
             .collect()
+    }
+
+    pub fn task_config_snapshot(&self) -> HashMap<String, TaskConfig> {
+        self.task_configs.clone()
+    }
+
+    pub async fn task_metrics_snapshot(&self) -> HashMap<String, TaskMetricsSnapshot> {
+        let mut snapshot = HashMap::new();
+        for (task_id, metrics) in &self.task_metrics {
+            let guard = metrics.lock().await;
+            snapshot.insert(task_id.clone(), guard.snapshot());
+        }
+        snapshot
     }
 
     /// Spawn tasks from configuration using the default StandxClient builder.
@@ -309,6 +333,8 @@ impl TaskManager {
                 ));
             }
 
+            let metrics = Arc::new(Mutex::new(TaskMetrics::default()));
+
             let account = accounts_by_id
                 .get(&task_config.account_id)
                 .ok_or_else(|| anyhow!("account_id not found for task_id={}", task_config.id))?;
@@ -330,9 +356,15 @@ impl TaskManager {
                 price_rx,
                 shutdown.clone(),
                 self.symbol_cache.clone(),
+                metrics.clone(),
             );
+            let task_config = task.config.clone();
             let handle = task.spawn();
-            self.tasks.insert(task_id, ManagedTask { shutdown, handle });
+            self.tasks
+                .insert(task_id.clone(), ManagedTask { shutdown, handle });
+            self.task_configs
+                .insert(task_id.clone(), task_config.clone());
+            self.task_metrics.insert(task_id.clone(), metrics);
         }
 
         Ok(())
@@ -342,6 +374,9 @@ impl TaskManager {
         let Some(task) = self.tasks.remove(task_id) else {
             return Err(anyhow!("task_id not found: {task_id}"));
         };
+
+        self.task_configs.remove(task_id);
+        self.task_metrics.remove(task_id);
 
         task.shutdown.cancel();
 
@@ -374,7 +409,10 @@ impl TaskManager {
     /// Guarantees a bounded shutdown time (30s) and aborts remaining tasks on timeout.
     pub async fn shutdown_and_wait(&mut self) -> Result<()> {
         self.shutdown.cancel();
-        self.join_all_with_deadline(SHUTDOWN_TIMEOUT).await
+        let result = self.join_all_with_deadline(SHUTDOWN_TIMEOUT).await;
+        self.task_configs.clear();
+        self.task_metrics.clear();
+        result
     }
 
     async fn join_all_with_deadline(&mut self, timeout: Duration) -> Result<()> {
@@ -459,6 +497,7 @@ pub struct Task {
     state: TaskState,
     shutdown: CancellationToken,
     symbol_cache: std::sync::Arc<Mutex<SymbolCache>>,
+    metrics: Arc<Mutex<TaskMetrics>>,
 }
 
 impl Task {
@@ -469,6 +508,7 @@ impl Task {
         let (tx, rx) = watch::channel(dummy_symbol_price("DUMMY"));
         drop(tx);
         let client = StandxClient::new().expect("StandxClient::new should succeed");
+        let metrics = Arc::new(Mutex::new(TaskMetrics::default()));
 
         Self {
             id: Uuid::new_v4(),
@@ -479,6 +519,7 @@ impl Task {
             state: TaskState::Init,
             shutdown: CancellationToken::new(),
             symbol_cache: std::sync::Arc::new(Mutex::new(SymbolCache::default())),
+            metrics,
         }
     }
 
@@ -501,6 +542,7 @@ impl Task {
         price_rx: watch::Receiver<SymbolPrice>,
         shutdown: CancellationToken,
         symbol_cache: std::sync::Arc<Mutex<SymbolCache>>,
+        metrics: Arc<Mutex<TaskMetrics>>,
     ) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -511,6 +553,7 @@ impl Task {
             state: TaskState::Init,
             shutdown,
             symbol_cache,
+            metrics,
         }
     }
 
@@ -530,6 +573,7 @@ impl Task {
             price_rx,
             shutdown,
             std::sync::Arc::new(Mutex::new(SymbolCache::default())),
+            std::sync::Arc::new(Mutex::new(TaskMetrics::default())),
         ))
     }
 
@@ -609,6 +653,10 @@ impl Task {
             .positions
             .iter()
             .fold(Decimal::ZERO, |acc, position| acc + position.qty);
+        {
+            let mut metrics = self.metrics.lock().await;
+            metrics.record_position_qty(initial_position_qty);
+        }
         let order_tracker = Arc::new(Mutex::new(OrderTracker::new()));
         let order_tracker_ws = order_tracker.clone();
         let order_tracker_reconcile = order_tracker.clone();
@@ -625,6 +673,7 @@ impl Task {
             tier_count,
             initial_position_qty,
         );
+        strategy.set_metrics(self.metrics.clone());
 
         if let Some(info) = snapshot.symbol_info.as_ref() {
             strategy.set_symbol_constraints(
@@ -678,6 +727,7 @@ impl Task {
             price_rx,
             symbol_cache,
             risk_level,
+            self.metrics.clone(),
             guard_shutdown.clone(),
         );
         let order_future = Self::order_ws_loop(
@@ -686,6 +736,7 @@ impl Task {
             account_jwt,
             symbol,
             order_tracker_ws,
+            self.metrics.clone(),
             order_shutdown.clone(),
         );
         let reconcile_future = Self::order_reconcile_loop(
@@ -695,6 +746,7 @@ impl Task {
             symbol,
             order_tracker_reconcile,
             reconcile_rx,
+            self.metrics.clone(),
             reconcile_shutdown.clone(),
         );
         let strategy_future = strategy.run(&self.client, self.shutdown.clone());
@@ -1496,6 +1548,7 @@ impl Task {
         mut price_rx: watch::Receiver<SymbolPrice>,
         symbol_cache: Arc<Mutex<SymbolCache>>,
         risk_level: RiskLevel,
+        metrics: Arc<Mutex<TaskMetrics>>,
         shutdown: CancellationToken,
     ) -> Result<()> {
         if account_jwt.trim().is_empty() {
@@ -1588,6 +1641,7 @@ impl Task {
                             mark_price,
                             symbol_info,
                             risk_level,
+                            &metrics,
                             &mut guard_state,
                         ).await;
                     }
@@ -1641,6 +1695,7 @@ impl Task {
                         mark_price,
                         symbol_info,
                         risk_level,
+                        &metrics,
                         &mut guard_state,
                     ).await;
                 }
@@ -1739,6 +1794,7 @@ impl Task {
         account_jwt: &str,
         task_symbol: &str,
         order_tracker: Arc<Mutex<OrderTracker>>,
+        metrics: Arc<Mutex<TaskMetrics>>,
         shutdown: CancellationToken,
     ) -> Result<()> {
         if account_jwt.trim().is_empty() {
@@ -1833,6 +1889,11 @@ impl Task {
                             "order tracker ws update failed"
                         );
                     }
+
+                    let open_orders = tracker.open_order_count();
+                    drop(tracker);
+                    let mut metrics = metrics.lock().await;
+                    metrics.record_open_orders(open_orders);
                 }
             }
         }
@@ -1845,6 +1906,7 @@ impl Task {
         task_symbol: &str,
         order_tracker: Arc<Mutex<OrderTracker>>,
         mut reconcile_rx: mpsc::UnboundedReceiver<OrderReconcileRequest>,
+        metrics: Arc<Mutex<TaskMetrics>>,
         shutdown: CancellationToken,
     ) -> Result<()> {
         let mut interval = tokio::time::interval(ORDER_RECONCILE_INTERVAL);
@@ -1862,6 +1924,7 @@ impl Task {
                         task_id,
                         task_symbol,
                         &order_tracker,
+                        &metrics,
                         None,
                     ).await;
                 }
@@ -1875,6 +1938,7 @@ impl Task {
                         task_id,
                         task_symbol,
                         &order_tracker,
+                        &metrics,
                         Some(req),
                     ).await;
                 }
@@ -1888,6 +1952,7 @@ impl Task {
         task_id: &str,
         task_symbol: &str,
         order_tracker: &Arc<Mutex<OrderTracker>>,
+        metrics: &Arc<Mutex<TaskMetrics>>,
         request: Option<OrderReconcileRequest>,
     ) {
         let orders = match Self::query_all_open_orders_for_reconcile(
@@ -1915,6 +1980,11 @@ impl Task {
             let mut tracker = order_tracker.lock().await;
             tracker.reconcile_with_exchange(&orders.result, now)
         };
+
+        {
+            let mut metrics = metrics.lock().await;
+            metrics.record_open_orders(orders.result.len());
+        }
 
         match summary {
             Ok(summary) => {
@@ -2029,10 +2099,13 @@ impl Task {
         mark_price: Decimal,
         symbol_info: Option<SymbolInfo>,
         risk_level: RiskLevel,
+        metrics: &Arc<Mutex<TaskMetrics>>,
         guard_state: &mut PositionGuardState,
     ) {
         if position_qty.is_zero() {
             guard_state.position_qty = Decimal::ZERO;
+            let mut metrics = metrics.lock().await;
+            metrics.record_position_qty(Decimal::ZERO);
             if let Some(order) = guard_state.guard_order.take() {
                 Self::cancel_guard_order(client, task_uuid, task_id, &order.cl_ord_id).await;
             }
@@ -2040,6 +2113,10 @@ impl Task {
         }
 
         guard_state.position_qty = position_qty;
+        {
+            let mut metrics = metrics.lock().await;
+            metrics.record_position_qty(position_qty);
+        }
         let policy = exit_guard_policy_for_risk(risk_level, symbol_info.as_ref());
 
         if let Some(last_close) = guard_state.last_force_close {
@@ -2772,6 +2849,7 @@ mod tests {
         let (_tx, rx) = watch::channel(dummy_symbol_price(symbol));
         let shutdown = CancellationToken::new();
         let symbol_cache = std::sync::Arc::new(Mutex::new(SymbolCache::default()));
+        let metrics = std::sync::Arc::new(Mutex::new(TaskMetrics::default()));
         let mut task = Task::new_with_client(
             task_config,
             client,
@@ -2779,6 +2857,7 @@ mod tests {
             rx,
             shutdown,
             symbol_cache,
+            metrics,
         );
 
         let _ = task.startup_sequence().await.unwrap();
@@ -2874,6 +2953,7 @@ mod tests {
         let (_tx, rx) = watch::channel(dummy_symbol_price(symbol));
         let shutdown = CancellationToken::new();
         let symbol_cache = std::sync::Arc::new(Mutex::new(SymbolCache::default()));
+        let metrics = std::sync::Arc::new(Mutex::new(TaskMetrics::default()));
         let mut task = Task::new_with_client(
             task_config,
             client,
@@ -2881,6 +2961,7 @@ mod tests {
             rx,
             shutdown,
             symbol_cache,
+            metrics,
         );
 
         let _ = task.startup_sequence().await.unwrap();
@@ -2940,6 +3021,7 @@ mod tests {
         let (_tx, rx) = watch::channel(dummy_symbol_price(symbol));
         let shutdown = CancellationToken::new();
         let symbol_cache = std::sync::Arc::new(Mutex::new(SymbolCache::default()));
+        let metrics = std::sync::Arc::new(Mutex::new(TaskMetrics::default()));
         let mut task = Task::new_with_client(
             task_config,
             client,
@@ -2947,6 +3029,7 @@ mod tests {
             rx,
             shutdown,
             symbol_cache,
+            metrics,
         );
 
         let _ = task.startup_sequence().await.unwrap();
@@ -3061,6 +3144,7 @@ mod tests {
         let (_tx, rx) = watch::channel(dummy_symbol_price(symbol));
         let shutdown = CancellationToken::new();
         let symbol_cache = std::sync::Arc::new(Mutex::new(SymbolCache::default()));
+        let metrics = std::sync::Arc::new(Mutex::new(TaskMetrics::default()));
         let task = Task::new_with_client(
             task_config,
             client,
@@ -3068,6 +3152,7 @@ mod tests {
             rx,
             shutdown,
             symbol_cache,
+            metrics,
         );
 
         task.shutdown_sequence().await.unwrap();

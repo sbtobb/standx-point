@@ -31,6 +31,7 @@ use standx_point_adapter::{
 };
 
 use crate::order_state::{OrderState, OrderTracker};
+use crate::metrics::TaskMetrics;
 use crate::risk::{RiskManager, RiskState};
 
 const BPS_DENOMINATOR: i64 = 10_000;
@@ -347,6 +348,7 @@ pub struct MarketMakingStrategy {
     max_non_usd_value: Decimal,
     bootstrap_side: Option<QuoteSide>,
     order_reconcile_tx: mpsc::UnboundedSender<OrderReconcileRequest>,
+    metrics: Option<Arc<Mutex<TaskMetrics>>>,
 }
 
 impl MarketMakingStrategy {
@@ -384,7 +386,25 @@ impl MarketMakingStrategy {
             inventory_qty: Decimal::ZERO,
             max_non_usd_value: Decimal::ZERO,
             bootstrap_side: None,
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
             order_reconcile_tx: reconcile_tx,
+            metrics: None,
+||||||| ancestor
+            metrics: None,
+=======
+            order_reconcile_tx: reconcile_tx,
+>>>>>>> theirs
+||||||| ancestor
+            order_reconcile_tx: reconcile_tx,
+=======
+            metrics: None,
+>>>>>>> theirs
+||||||| ancestor
+=======
+            order_reconcile_tx: reconcile_tx,
+>>>>>>> theirs
         }
     }
 
@@ -430,8 +450,30 @@ impl MarketMakingStrategy {
             inventory_qty: initial_position_qty,
             max_non_usd_value,
             bootstrap_side,
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
             order_reconcile_tx,
+            metrics: None,
+||||||| ancestor
+            metrics: None,
+=======
+            order_reconcile_tx,
+>>>>>>> theirs
+||||||| ancestor
+            order_reconcile_tx,
+=======
+            metrics: None,
+>>>>>>> theirs
+||||||| ancestor
+=======
+            order_reconcile_tx,
+>>>>>>> theirs
         }
+    }
+
+    pub fn set_metrics(&mut self, metrics: Arc<Mutex<TaskMetrics>>) {
+        self.metrics = Some(metrics);
     }
 
     pub(crate) fn tier_count_for_risk(risk_level: RiskLevel) -> u8 {
@@ -513,10 +555,14 @@ impl MarketMakingStrategy {
                         continue;
                     }
 
-                    let reference_price = {
+                    let (mark_price, reference_price) = {
                         let snapshot = self.price_rx.borrow();
-                        self.quote_reference_price(&snapshot)
+                        (snapshot.mark_price, self.quote_reference_price(&snapshot))
                     };
+                    if let Some(metrics) = self.metrics.as_ref() {
+                        let mut metrics = metrics.lock().await;
+                        metrics.record_price(mark_price);
+                    }
                     if self.live_quotes.is_empty() {
                         // Kick-start quoting when idle.
                         self.refresh_from_latest(executor, tokio::time::Instant::now()).await?;
@@ -527,6 +573,10 @@ impl MarketMakingStrategy {
                 }
                 _ = heartbeat.tick() => {
                     let snapshot = self.uptime_snapshot();
+                    if let Some(metrics) = self.metrics.as_ref() {
+                        let mut metrics = metrics.lock().await;
+                        metrics.record_heartbeat();
+                    }
                     debug!(
                         symbol = %self.symbol,
                         mode = ?self.mode,

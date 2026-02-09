@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod market_data;
+pub mod metrics;
 pub mod order_state;
 pub mod risk;
 pub mod strategy;
