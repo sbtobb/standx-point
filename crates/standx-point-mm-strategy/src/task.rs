@@ -1807,11 +1807,21 @@ impl Task {
         }
 
         let mut ws = StandxWebSocket::new();
-        if let Err(err) = ws.connect_order_stream(account_jwt).await {
+        if let Err(err) = ws.connect_market_stream().await {
             tracing::warn!(
                 task_uuid = %task_uuid,
                 task_id = %task_id,
                 "order ws connect failed: {err}"
+            );
+            return Ok(());
+        }
+
+        let streams = ["order"];
+        if let Err(err) = ws.authenticate(account_jwt, Some(&streams)).await {
+            tracing::warn!(
+                task_uuid = %task_uuid,
+                task_id = %task_id,
+                "order ws auth failed: {err}"
             );
             return Ok(());
         }
