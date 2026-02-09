@@ -190,7 +190,7 @@ impl StandxClient {
                     return serde_json::from_str::<T>(&body).map_err(|err| {
                         const MAX_BODY_LOG_CHARS: usize = 2000;
                         let preview: String = body.chars().take(MAX_BODY_LOG_CHARS).collect();
-                        let truncated = body.chars().skip(MAX_BODY_LOG_CHARS).next().is_some();
+                        let truncated = body.chars().nth(MAX_BODY_LOG_CHARS).is_some();
                         let body_preview = if truncated {
                             format!("{preview}...[truncated]")
                         } else {
