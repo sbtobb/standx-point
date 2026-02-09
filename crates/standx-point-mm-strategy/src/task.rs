@@ -462,7 +462,7 @@ impl TaskManager {
             let initial = dummy_symbol_price(symbol);
             let (tx, rx) = watch::channel(initial);
             self.test_price_txs.push(tx);
-            return rx;
+            rx
         }
 
         #[cfg(not(test))]
@@ -1235,10 +1235,9 @@ impl Task {
                 position.qty,
             )
             .await
+                && first_error.is_none()
             {
-                if first_error.is_none() {
-                    first_error = Some(err);
-                }
+                first_error = Some(err);
             }
         }
 
@@ -1539,6 +1538,7 @@ impl Task {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn position_guard_ws_loop(
         client: &StandxClient,
         task_uuid: Uuid,
@@ -1715,10 +1715,10 @@ impl Task {
                     };
                     let policy = exit_guard_policy_for_risk(risk_level, symbol_info.as_ref());
 
-                    if let Some(last_close) = guard_state.last_force_close {
-                        if last_close.elapsed() < POSITION_GUARD_COOLDOWN {
-                            continue;
-                        }
+                    if let Some(last_close) = guard_state.last_force_close
+                        && last_close.elapsed() < POSITION_GUARD_COOLDOWN
+                    {
+                        continue;
                     }
 
                     if guard_state.guard_order.is_none() {
@@ -1877,16 +1877,16 @@ impl Task {
 
                     let now = std::time::Instant::now();
                     let mut tracker = order_tracker.lock().await;
-                    if let Some(cl_ord_id) = cl_ord_id.as_deref() {
-                        if let Err(err) = tracker.acknowledge(cl_ord_id, update.id, now) {
-                            tracing::debug!(
-                                task_uuid = %task_uuid,
-                                task_id = %task_id,
-                                cl_ord_id = %cl_ord_id,
-                                error = %err,
-                                "order tracker acknowledge failed"
-                            );
-                        }
+                    if let Some(cl_ord_id) = cl_ord_id.as_deref()
+                        && let Err(err) = tracker.acknowledge(cl_ord_id, update.id, now)
+                    {
+                        tracing::debug!(
+                            task_uuid = %task_uuid,
+                            task_id = %task_id,
+                            cl_ord_id = %cl_ord_id,
+                            error = %err,
+                            "order tracker acknowledge failed"
+                        );
                     }
 
                     if let Err(err) = tracker.handle_ws_update(&update, now) {
@@ -1909,6 +1909,7 @@ impl Task {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn order_reconcile_loop(
         client: &StandxClient,
         task_uuid: Uuid,
@@ -2100,6 +2101,7 @@ impl Task {
 }
 
 impl Task {
+    #[allow(clippy::too_many_arguments)]
     async fn apply_position_guard_update(
         client: &StandxClient,
         task_uuid: Uuid,
@@ -2129,10 +2131,10 @@ impl Task {
         }
         let policy = exit_guard_policy_for_risk(risk_level, symbol_info.as_ref());
 
-        if let Some(last_close) = guard_state.last_force_close {
-            if last_close.elapsed() < POSITION_GUARD_COOLDOWN {
-                return;
-            }
+        if let Some(last_close) = guard_state.last_force_close
+            && last_close.elapsed() < POSITION_GUARD_COOLDOWN
+        {
+            return;
         }
 
         let Some((side, price)) =
@@ -2149,10 +2151,12 @@ impl Task {
         };
 
         let qty = position_qty.abs();
-        if let Some(existing) = guard_state.guard_order.as_ref() {
-            if existing.side == side && existing.price == price && existing.qty == qty {
-                return;
-            }
+        if let Some(existing) = guard_state.guard_order.as_ref()
+            && existing.side == side
+            && existing.price == price
+            && existing.qty == qty
+        {
+            return;
         }
 
         if let Some(order) = guard_state.guard_order.take() {

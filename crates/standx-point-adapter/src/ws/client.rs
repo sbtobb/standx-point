@@ -149,14 +149,14 @@ impl StandxWebSocket {
             "token": token
         });
 
-        if let Some(channels) = streams {
-            if let Some(auth_map) = auth.as_object_mut() {
-                let stream_values: Vec<Value> = channels
-                    .iter()
-                    .map(|channel| serde_json::json!({ "channel": channel }))
-                    .collect();
-                auth_map.insert("streams".to_string(), Value::Array(stream_values));
-            }
+        if let Some(channels) = streams
+            && let Some(auth_map) = auth.as_object_mut()
+        {
+            let stream_values: Vec<Value> = channels
+                .iter()
+                .map(|channel| serde_json::json!({ "channel": channel }))
+                .collect();
+            auth_map.insert("streams".to_string(), Value::Array(stream_values));
         }
 
         let msg = Value::Object({
@@ -325,9 +325,9 @@ impl StandxWebSocket {
             })?
         };
 
-        let stream_kind = { self.stream_kind.lock().await.clone() };
+        let stream_kind = *self.stream_kind.lock().await;
 
-        let message = ensure_request_id(message, stream_kind.as_deref());
+        let message = ensure_request_id(message, stream_kind);
 
         sender
             .send(WsMessage::Text(message.to_string().into()))
@@ -673,13 +673,13 @@ fn looks_like_position(value: &Value) -> bool {
         return channel == "position";
     }
 
-    for key in ["topic", "type", "event", "action"] {
-        if let Some(value) = value.get(key).and_then(|entry| entry.as_str()) {
-            if value.contains("position") {
+        for key in ["topic", "type", "event", "action"] {
+            if let Some(value) = value.get(key).and_then(|entry| entry.as_str())
+                && value.contains("position")
+            {
                 return true;
             }
         }
-    }
 
     if let Some(data) = value.get("data") {
         if data.get("symbol").is_some() && data.get("qty").is_some() {
