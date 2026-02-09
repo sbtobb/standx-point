@@ -386,25 +386,8 @@ impl MarketMakingStrategy {
             inventory_qty: Decimal::ZERO,
             max_non_usd_value: Decimal::ZERO,
             bootstrap_side: None,
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
             order_reconcile_tx: reconcile_tx,
             metrics: None,
-||||||| ancestor
-            metrics: None,
-=======
-            order_reconcile_tx: reconcile_tx,
->>>>>>> theirs
-||||||| ancestor
-            order_reconcile_tx: reconcile_tx,
-=======
-            metrics: None,
->>>>>>> theirs
-||||||| ancestor
-=======
-            order_reconcile_tx: reconcile_tx,
->>>>>>> theirs
         }
     }
 
@@ -450,25 +433,8 @@ impl MarketMakingStrategy {
             inventory_qty: initial_position_qty,
             max_non_usd_value,
             bootstrap_side,
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
             order_reconcile_tx,
             metrics: None,
-||||||| ancestor
-            metrics: None,
-=======
-            order_reconcile_tx,
->>>>>>> theirs
-||||||| ancestor
-            order_reconcile_tx,
-=======
-            metrics: None,
->>>>>>> theirs
-||||||| ancestor
-=======
-            order_reconcile_tx,
->>>>>>> theirs
         }
     }
 
