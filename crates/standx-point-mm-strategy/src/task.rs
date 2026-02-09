@@ -11,17 +11,19 @@
 [UPDATE]: 2026-02-07 Wire price tick constraints to strategy
 [UPDATE]: 2026-02-07 Guard positions with fee-aware limit exits
 [UPDATE]: 2026-02-08 Support wallet private key auth configuration
+[UPDATE]: 2026-02-09 Add order reconcile loop for cancel ack gating
 */
 
 use crate::config::{AccountConfig, StrategyConfig, TaskConfig};
 use crate::market_data::MarketDataHub;
 use crate::order_state::OrderTracker;
-use crate::strategy::{MarketMakingStrategy, RiskLevel, StrategyMode};
+use crate::strategy::{MarketMakingStrategy, OrderReconcileRequest, RiskLevel, StrategyMode};
 use anyhow::{Context as _, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 use standx_point_adapter::auth::{AuthManager, EvmWalletSigner, SolanaWalletSigner};
+use standx_point_adapter::ws::message::OrderUpdateData;
 use standx_point_adapter::{
     Balance, CancelOrderRequest, Chain, ClientConfig, Credentials, Ed25519Signer, NewOrderRequest,
     Order, OrderStatus, OrderType, PaginatedOrders, Position, Side, StandxClient, StandxError,
@@ -33,7 +35,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Once};
 use std::time::Duration;
 use tokio::fs;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, Sleep};
 use tokio_util::sync::CancellationToken;
@@ -52,6 +54,7 @@ const DEFAULT_GUARD_BPS_MODERATE: i64 = 50;
 const DEFAULT_GUARD_BPS_AGGRESSIVE: i64 = 80;
 const DEFAULT_FEE_BPS: i64 = 2;
 const DEFAULT_JWT_EXPIRES_SECONDS: u64 = 7 * 24 * 60 * 60;
+const ORDER_RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 
 static PANIC_HOOK_ONCE: Once = Once::new();
 
@@ -607,6 +610,9 @@ impl Task {
             .iter()
             .fold(Decimal::ZERO, |acc, position| acc + position.qty);
         let order_tracker = Arc::new(Mutex::new(OrderTracker::new()));
+        let order_tracker_ws = order_tracker.clone();
+        let order_tracker_reconcile = order_tracker.clone();
+        let (reconcile_tx, reconcile_rx) = mpsc::unbounded_channel();
         let mode = StrategyMode::aggressive_for_risk(risk_level);
         let mut strategy = MarketMakingStrategy::new_with_params(
             self.config.symbol.clone(),
@@ -614,6 +620,7 @@ impl Task {
             risk_level,
             self.price_rx.clone(),
             order_tracker,
+            reconcile_tx,
             mode,
             tier_count,
             initial_position_qty,
@@ -653,6 +660,8 @@ impl Task {
         );
 
         let guard_shutdown = self.shutdown.child_token();
+        let order_shutdown = self.shutdown.child_token();
+        let reconcile_shutdown = self.shutdown.child_token();
         let client = &self.client;
         let id = self.id;
         let task_id = &self.config.id;
@@ -671,19 +680,56 @@ impl Task {
             risk_level,
             guard_shutdown.clone(),
         );
+        let order_future = Self::order_ws_loop(
+            id,
+            task_id,
+            account_jwt,
+            symbol,
+            order_tracker_ws,
+            order_shutdown.clone(),
+        );
+        let reconcile_future = Self::order_reconcile_loop(
+            client,
+            id,
+            task_id,
+            symbol,
+            order_tracker_reconcile,
+            reconcile_rx,
+            reconcile_shutdown.clone(),
+        );
         let strategy_future = strategy.run(&self.client, self.shutdown.clone());
         tokio::pin!(guard_future);
+        tokio::pin!(order_future);
+        tokio::pin!(reconcile_future);
         tokio::pin!(strategy_future);
 
         let strategy_result = tokio::select! {
             res = &mut strategy_future => {
                 guard_shutdown.cancel();
+                order_shutdown.cancel();
+                reconcile_shutdown.cancel();
                 if let Err(err) = guard_future.await {
                     tracing::warn!(
                         task_uuid = %self.id,
                         task_id = %self.config.id,
                         symbol = %self.config.symbol,
                         "position guard exited with error: {err}"
+                    );
+                }
+                if let Err(err) = order_future.await {
+                    tracing::warn!(
+                        task_uuid = %self.id,
+                        task_id = %self.config.id,
+                        symbol = %self.config.symbol,
+                        "order ws loop exited with error: {err}"
+                    );
+                }
+                if let Err(err) = reconcile_future.await {
+                    tracing::warn!(
+                        task_uuid = %self.id,
+                        task_id = %self.config.id,
+                        symbol = %self.config.symbol,
+                        "order reconcile loop exited with error: {err}"
                     );
                 }
                 res
@@ -697,7 +743,86 @@ impl Task {
                         "position guard exited with error: {err}"
                     );
                 }
-                strategy_future.await
+                let res = strategy_future.await;
+                order_shutdown.cancel();
+                reconcile_shutdown.cancel();
+                if let Err(err) = order_future.await {
+                    tracing::warn!(
+                        task_uuid = %self.id,
+                        task_id = %self.config.id,
+                        symbol = %self.config.symbol,
+                        "order ws loop exited with error: {err}"
+                    );
+                }
+                if let Err(err) = reconcile_future.await {
+                    tracing::warn!(
+                        task_uuid = %self.id,
+                        task_id = %self.config.id,
+                        symbol = %self.config.symbol,
+                        "order reconcile loop exited with error: {err}"
+                    );
+                }
+                res
+            }
+            res = &mut order_future => {
+                if let Err(err) = res {
+                    tracing::warn!(
+                        task_uuid = %self.id,
+                        task_id = %self.config.id,
+                        symbol = %self.config.symbol,
+                        "order ws loop exited with error: {err}"
+                    );
+                }
+                let res = strategy_future.await;
+                guard_shutdown.cancel();
+                reconcile_shutdown.cancel();
+                if let Err(err) = guard_future.await {
+                    tracing::warn!(
+                        task_uuid = %self.id,
+                        task_id = %self.config.id,
+                        symbol = %self.config.symbol,
+                        "position guard exited with error: {err}"
+                    );
+                }
+                if let Err(err) = reconcile_future.await {
+                    tracing::warn!(
+                        task_uuid = %self.id,
+                        task_id = %self.config.id,
+                        symbol = %self.config.symbol,
+                        "order reconcile loop exited with error: {err}"
+                    );
+                }
+                res
+            }
+            res = &mut reconcile_future => {
+                if let Err(err) = res {
+                    tracing::warn!(
+                        task_uuid = %self.id,
+                        task_id = %self.config.id,
+                        symbol = %self.config.symbol,
+                        "order reconcile loop exited with error: {err}"
+                    );
+                }
+                let res = strategy_future.await;
+                guard_shutdown.cancel();
+                order_shutdown.cancel();
+                if let Err(err) = guard_future.await {
+                    tracing::warn!(
+                        task_uuid = %self.id,
+                        task_id = %self.config.id,
+                        symbol = %self.config.symbol,
+                        "position guard exited with error: {err}"
+                    );
+                }
+                if let Err(err) = order_future.await {
+                    tracing::warn!(
+                        task_uuid = %self.id,
+                        task_id = %self.config.id,
+                        symbol = %self.config.symbol,
+                        "order ws loop exited with error: {err}"
+                    );
+                }
+                res
             }
         };
         if let Err(err) = &strategy_result {
@@ -1606,6 +1731,291 @@ impl Task {
                 }
             }
         }
+    }
+
+    async fn order_ws_loop(
+        task_uuid: Uuid,
+        task_id: &str,
+        account_jwt: &str,
+        task_symbol: &str,
+        order_tracker: Arc<Mutex<OrderTracker>>,
+        shutdown: CancellationToken,
+    ) -> Result<()> {
+        if account_jwt.trim().is_empty() {
+            tracing::warn!(
+                task_uuid = %task_uuid,
+                task_id = %task_id,
+                "order ws disabled: missing account jwt"
+            );
+            return Ok(());
+        }
+
+        let mut ws = StandxWebSocket::new();
+        if let Err(err) = ws.connect_order_stream(account_jwt).await {
+            tracing::warn!(
+                task_uuid = %task_uuid,
+                task_id = %task_id,
+                "order ws connect failed: {err}"
+            );
+            return Ok(());
+        }
+
+        if let Err(err) = ws.subscribe_orders().await {
+            tracing::warn!(
+                task_uuid = %task_uuid,
+                task_id = %task_id,
+                "order ws subscribe failed: {err}"
+            );
+            return Ok(());
+        }
+
+        let mut rx = ws
+            .take_receiver()
+            .ok_or_else(|| anyhow!("order ws receiver already taken"))?;
+
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    return Ok(());
+                }
+                msg = rx.recv() => {
+                    let Some(message) = msg else {
+                        return Ok(());
+                    };
+
+                    let WebSocketMessage::Order { data } = message else {
+                        continue;
+                    };
+
+                    let update = match serde_json::from_value::<OrderUpdateData>(data.clone()) {
+                        Ok(update) => update,
+                        Err(err) => {
+                            tracing::debug!(
+                                task_uuid = %task_uuid,
+                                task_id = %task_id,
+                                error = %err,
+                                "order ws update deserialize failed"
+                            );
+                            continue;
+                        }
+                    };
+
+                    if update.symbol != task_symbol {
+                        continue;
+                    }
+
+                    let cl_ord_id = data
+                        .get("cl_ord_id")
+                        .and_then(|value| value.as_str())
+                        .map(|value| value.to_string());
+
+                    let now = std::time::Instant::now();
+                    let mut tracker = order_tracker.lock().await;
+                    if let Some(cl_ord_id) = cl_ord_id.as_deref() {
+                        if let Err(err) = tracker.acknowledge(cl_ord_id, update.id, now) {
+                            tracing::debug!(
+                                task_uuid = %task_uuid,
+                                task_id = %task_id,
+                                cl_ord_id = %cl_ord_id,
+                                error = %err,
+                                "order tracker acknowledge failed"
+                            );
+                        }
+                    }
+
+                    if let Err(err) = tracker.handle_ws_update(&update, now) {
+                        tracing::debug!(
+                            task_uuid = %task_uuid,
+                            task_id = %task_id,
+                            order_id = update.id,
+                            status = %update.status,
+                            error = %err,
+                            "order tracker ws update failed"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    async fn order_reconcile_loop(
+        client: &StandxClient,
+        task_uuid: Uuid,
+        task_id: &str,
+        task_symbol: &str,
+        order_tracker: Arc<Mutex<OrderTracker>>,
+        mut reconcile_rx: mpsc::UnboundedReceiver<OrderReconcileRequest>,
+        shutdown: CancellationToken,
+    ) -> Result<()> {
+        let mut interval = tokio::time::interval(ORDER_RECONCILE_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    return Ok(());
+                }
+                _ = interval.tick() => {
+                    Self::reconcile_orders_once(
+                        client,
+                        task_uuid,
+                        task_id,
+                        task_symbol,
+                        &order_tracker,
+                        None,
+                    ).await;
+                }
+                req = reconcile_rx.recv() => {
+                    let Some(req) = req else {
+                        return Ok(());
+                    };
+                    Self::reconcile_orders_once(
+                        client,
+                        task_uuid,
+                        task_id,
+                        task_symbol,
+                        &order_tracker,
+                        Some(req),
+                    ).await;
+                }
+            }
+        }
+    }
+
+    async fn reconcile_orders_once(
+        client: &StandxClient,
+        task_uuid: Uuid,
+        task_id: &str,
+        task_symbol: &str,
+        order_tracker: &Arc<Mutex<OrderTracker>>,
+        request: Option<OrderReconcileRequest>,
+    ) {
+        let orders = match Self::query_all_open_orders_for_reconcile(
+            client,
+            task_uuid,
+            task_id,
+            task_symbol,
+        )
+        .await
+        {
+            Ok(orders) => orders,
+            Err(err) => {
+                tracing::warn!(
+                    task_uuid = %task_uuid,
+                    task_id = %task_id,
+                    symbol = %task_symbol,
+                    "order reconcile query failed: {err}"
+                );
+                return;
+            }
+        };
+
+        let now = std::time::Instant::now();
+        let summary = {
+            let mut tracker = order_tracker.lock().await;
+            tracker.reconcile_with_exchange(&orders.result, now)
+        };
+
+        match summary {
+            Ok(summary) => {
+                if let Some(req) = request {
+                    tracing::debug!(
+                        task_uuid = %task_uuid,
+                        task_id = %task_id,
+                        symbol = %task_symbol,
+                        reason = ?req.reason,
+                        cl_ord_id = %req.cl_ord_id,
+                        inserted = summary.inserted,
+                        updated = summary.updated,
+                        missing_failed = summary.missing_failed,
+                        "order reconcile completed"
+                    );
+                } else {
+                    tracing::debug!(
+                        task_uuid = %task_uuid,
+                        task_id = %task_id,
+                        symbol = %task_symbol,
+                        inserted = summary.inserted,
+                        updated = summary.updated,
+                        missing_failed = summary.missing_failed,
+                        "order reconcile completed"
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    task_uuid = %task_uuid,
+                    task_id = %task_id,
+                    symbol = %task_symbol,
+                    "order reconcile failed: {err}"
+                );
+            }
+        }
+    }
+
+    async fn query_all_open_orders_for_reconcile(
+        client: &StandxClient,
+        task_uuid: Uuid,
+        task_id: &str,
+        task_symbol: &str,
+    ) -> Result<PaginatedOrders> {
+        let open_orders = match client.query_open_orders(Some(task_symbol)).await {
+            Ok(orders) => orders,
+            Err(StandxError::Api { code: 404, message }) => {
+                tracing::warn!(
+                    task_uuid = %task_uuid,
+                    task_id = %task_id,
+                    symbol = %task_symbol,
+                    "query_open_orders returned 404; treating as no open orders: {message}"
+                );
+                return Ok(PaginatedOrders {
+                    page_size: 0,
+                    result: Vec::new(),
+                    total: 0,
+                });
+            }
+            Err(err) => {
+                tracing::warn!(
+                    task_uuid = %task_uuid,
+                    task_id = %task_id,
+                    symbol = %task_symbol,
+                    "query_open_orders failed; falling back to query_orders: {err}"
+                );
+
+                let fallback = client
+                    .query_orders(Some(task_symbol), Some(OrderStatus::Open), None)
+                    .await;
+
+                return match fallback {
+                    Ok(orders) => Ok(orders),
+                    Err(fallback_err) => Err(anyhow!(err)).context(format!(
+                        "query_open_orders failed; query_orders fallback failed: {fallback_err}"
+                    )),
+                };
+            }
+        };
+
+        if open_orders.total > open_orders.result.len() as u32 {
+            let limit = open_orders.total;
+            match client
+                .query_orders(Some(task_symbol), Some(OrderStatus::Open), Some(limit))
+                .await
+            {
+                Ok(expanded) => return Ok(expanded),
+                Err(err) => {
+                    tracing::warn!(
+                        task_uuid = %task_uuid,
+                        task_id = %task_id,
+                        symbol = %task_symbol,
+                        total = open_orders.total,
+                        page_size = open_orders.page_size,
+                        "query_orders failed while expanding open orders: {err}"
+                    );
+                }
+            }
+        }
+
+        Ok(open_orders)
     }
 }
 
@@ -2782,7 +3192,7 @@ mod tests {
                     "result": [],
                     "total": 0,
                 })))
-                .expect(2)
+                .expect(2..)
                 .mount(&server)
                 .await;
 
