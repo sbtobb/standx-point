@@ -654,6 +654,8 @@ mod tests {
             margin: Decimal::ZERO,
             order_type: OrderType::Limit,
             payload: None,
+            tp_price: None,
+            sl_price: None,
             position_id: 0,
             price: Some(decimal("1")),
             qty,

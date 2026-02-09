@@ -76,6 +76,18 @@ pub struct Order {
     pub order_type: OrderType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<String>,
+    #[serde(
+        default,
+        with = "rust_decimal::serde::str_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tp_price: Option<Decimal>,
+    #[serde(
+        default,
+        with = "rust_decimal::serde::str_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sl_price: Option<Decimal>,
     pub position_id: i64,
     #[serde(with = "rust_decimal::serde::str_option")]
     pub price: Option<Decimal>,
