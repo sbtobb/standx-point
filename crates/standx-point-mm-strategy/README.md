@@ -82,6 +82,9 @@ export STANDX_MM_BUDGET_USD="50000"
 # export STANDX_MM_CHAIN="bsc"
 # export STANDX_MM_ACCOUNT_ID="account-1"
 # export STANDX_MM_TASK_ID="task-btc"
+# export STANDX_MM_GUARD_CLOSE_ENABLED="false"
+# export STANDX_MM_TP_BPS="30"
+# export STANDX_MM_SL_BPS="20"
 
 standx-point-mm-strategy --env --dry-run
 ```
@@ -161,6 +164,9 @@ tasks:
     risk:
       level: "low"                     # Risk level: low/medium/high/xhigh
       budget_usd: "100000"             # Budget in USD for quoting
+      guard_close_enabled: false        # Optional position guard close toggle
+      tp_bps: "30"                      # Optional take-profit distance in bps
+      sl_bps: "20"                      # Optional stop-loss distance in bps
 ```
 
 ### Account Fields
@@ -182,6 +188,12 @@ tasks:
 | `account_id` | String | Yes | Account identifier from `accounts` section |
 | `risk.level` | String | Yes | Risk level: `"low"`, `"medium"`, `"high"`, or `"xhigh"` |
 | `risk.budget_usd` | String | Yes | Budget in USD for quoting (名义金额) |
+| `risk.guard_close_enabled` | Bool | No | Enable position guard close orders (default: false) |
+| `risk.tp_bps` | String | No | Take-profit distance in bps (`"1"` = 0.01%) |
+| `risk.sl_bps` | String | No | Stop-loss distance in bps (`"1"` = 0.01%) |
+
+当 `risk.tp_bps`/`risk.sl_bps` 提供时，做市挂单会在提交时携带止盈止损触发价，成交后由系统自动创建对应的减仓单。
+当未提供时，默认 `tp_bps = maker_fee + taker_fee`（bps），`sl_bps` 按风险等级放大：low=2x、medium=3x、high=4x、xhigh=5x。
 
 ### Risk Level Details
 

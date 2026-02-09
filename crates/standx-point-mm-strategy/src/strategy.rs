@@ -328,6 +328,8 @@ pub struct MarketMakingStrategy {
     budget_usd: Decimal,
     tier_count: usize,
     risk_level: RiskLevel,
+    tp_bps: Option<Decimal>,
+    sl_bps: Option<Decimal>,
     price_tick_decimals: Option<u32>,
     qty_tick_decimals: Option<u32>,
     min_order_qty: Option<Decimal>,
@@ -368,6 +370,8 @@ impl MarketMakingStrategy {
             budget_usd: Decimal::ZERO,
             tier_count: 5,
             risk_level: RiskLevel::Low,
+            tp_bps: None,
+            sl_bps: None,
             price_tick_decimals: None,
             qty_tick_decimals: None,
             min_order_qty: None,
@@ -395,6 +399,8 @@ impl MarketMakingStrategy {
         symbol: String,
         budget_usd: Decimal,
         risk_level: RiskLevel,
+        tp_bps: Option<Decimal>,
+        sl_bps: Option<Decimal>,
         price_rx: watch::Receiver<SymbolPrice>,
         order_tracker: Arc<Mutex<OrderTracker>>,
         order_reconcile_tx: mpsc::UnboundedSender<OrderReconcileRequest>,
@@ -415,6 +421,8 @@ impl MarketMakingStrategy {
             budget_usd,
             tier_count: normalize_tier_count(tier_count),
             risk_level,
+            tp_bps,
+            sl_bps,
             price_tick_decimals: None,
             qty_tick_decimals: None,
             min_order_qty: None,
@@ -1192,6 +1200,8 @@ impl MarketMakingStrategy {
                 .map_err(|err| anyhow!("order_tracker register_pending failed: {err}"))?;
         }
 
+        let (tp_price, sl_price) = self.tp_sl_for_order(slot.side.to_order_side(), price);
+
         let req = NewOrderRequest {
             symbol: self.symbol.clone(),
             side: slot.side.to_order_side(),
@@ -1203,8 +1213,8 @@ impl MarketMakingStrategy {
             cl_ord_id: Some(cl_ord_id.clone()),
             margin_mode: None,
             leverage: None,
-            tp_price: None,
-            sl_price: None,
+            tp_price,
+            sl_price,
         };
 
         match executor.new_order(req).await {
@@ -1379,6 +1389,35 @@ impl MarketMakingStrategy {
             None => price,
         }
     }
+
+    fn tp_sl_for_order(&self, side: Side, price: Decimal) -> (Option<Decimal>, Option<Decimal>) {
+        let tp_price = self.tp_bps.and_then(|bps| match side {
+            Side::Buy => self.apply_bps(price, bps, true),
+            Side::Sell => self.apply_bps(price, bps, false),
+        });
+
+        let sl_price = self.sl_bps.and_then(|bps| match side {
+            Side::Buy => self.apply_bps(price, bps, false),
+            Side::Sell => self.apply_bps(price, bps, true),
+        });
+
+        (tp_price, sl_price)
+    }
+
+    fn apply_bps(&self, price: Decimal, bps: Decimal, increase: bool) -> Option<Decimal> {
+        if price <= Decimal::ZERO || bps <= Decimal::ZERO {
+            return None;
+        }
+
+        let ratio = bps / Decimal::from(BPS_DENOMINATOR);
+        let adjusted = if increase {
+            price * (Decimal::ONE + ratio)
+        } else {
+            price * (Decimal::ONE - ratio)
+        };
+        let aligned = self.align_price_for_order(adjusted);
+        if aligned > Decimal::ZERO { Some(aligned) } else { None }
+    }
 }
 
 impl Default for MarketMakingStrategy {
@@ -1549,6 +1588,8 @@ mod tests {
             "BTC-USD".to_string(),
             dec("1000"),
             RiskLevel::Low,
+            None,
+            None,
             rx,
             Arc::new(Mutex::new(OrderTracker::new())),
             reconcile_tx(),
@@ -1614,6 +1655,8 @@ mod tests {
             "BTC-USD".to_string(),
             dec("1000"),
             RiskLevel::Low,
+            None,
+            None,
             rx,
             Arc::new(Mutex::new(OrderTracker::new())),
             reconcile_tx(),
@@ -1671,6 +1714,8 @@ mod tests {
             "BTC-USD".to_string(),
             dec("1000"),
             RiskLevel::Low,
+            None,
+            None,
             rx,
             tracker,
             reconcile_tx(),
@@ -1710,6 +1755,8 @@ mod tests {
             "BTC-USD".to_string(),
             dec("1000"),
             RiskLevel::Low,
+            None,
+            None,
             rx,
             Arc::new(Mutex::new(OrderTracker::new())),
             reconcile_tx(),
@@ -1749,6 +1796,8 @@ mod tests {
             "BTC-USD".to_string(),
             dec("1000"),
             RiskLevel::Low,
+            None,
+            None,
             rx,
             tracker.clone(),
             reconcile_tx(),
@@ -1857,6 +1906,8 @@ mod tests {
             "BTC-USD".to_string(),
             dec("1000"),
             RiskLevel::Low,
+            None,
+            None,
             rx,
             tracker.clone(),
             reconcile_tx(),
@@ -2001,6 +2052,8 @@ mod tests {
             "BTC-USD".to_string(),
             dec("1000"),
             RiskLevel::Low,
+            None,
+            None,
             rx,
             Arc::new(Mutex::new(OrderTracker::new())),
             reconcile_tx(),

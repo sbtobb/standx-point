@@ -12,6 +12,9 @@
   - `ws/`: WebSocket client for real-time data
 - `tests/`: Integration tests for adapter components.
 - `examples/`: Usage examples for the crate.
+- `docs/`: StandX Perps API documentation.
+  - `perps-http.md`: HTTP API endpoints documentation
+  - `perps-ws.md`: WebSocket API documentation
 
 ## API Usage Flow
 

@@ -51,6 +51,9 @@ cargo run -p standx-point-mm-strategy -- --config config.yaml
 # # export STANDX_MM_CHAIN="bsc"
 # # export STANDX_MM_ACCOUNT_ID="account-1"
 # # export STANDX_MM_TASK_ID="task-btc"
+# # export STANDX_MM_GUARD_CLOSE_ENABLED="false"
+# # export STANDX_MM_TP_BPS="30"
+# # export STANDX_MM_SL_BPS="20"
 # ./target/release/standx-point-mm-strategy --env --dry-run
 ```
 
@@ -63,6 +66,9 @@ cargo run -p standx-point-mm-strategy -- --config config.yaml
 - `STANDX_MM_CHAIN`：链（可选，bsc/solana，默认 bsc）
 - `STANDX_MM_ACCOUNT_ID`：账户 ID（可选，默认使用钱包地址）
 - `STANDX_MM_TASK_ID`：任务 ID（可选，默认基于 symbol）
+- `STANDX_MM_GUARD_CLOSE_ENABLED`：仓位守卫平仓开关（可选，默认 false）
+- `STANDX_MM_TP_BPS`：止盈触发距离（可选，bps）
+- `STANDX_MM_SL_BPS`：止损触发距离（可选，bps）
 
 #### Docker 启动（使用环境变量）
 
@@ -76,6 +82,9 @@ docker run --rm \
   -e STANDX_MM_SYMBOL="BTC-USD" \
   -e STANDX_MM_RISK_LEVEL="low" \
   -e STANDX_MM_BUDGET_USD="50000" \
+  -e STANDX_MM_GUARD_CLOSE_ENABLED="false" \
+  -e STANDX_MM_TP_BPS="30" \
+  -e STANDX_MM_SL_BPS="20" \
   -e STANDX_MM_CHAIN="bsc" \
   standx-point-mm-strategy:latest
 ```
