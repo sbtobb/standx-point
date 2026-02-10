@@ -19,5 +19,5 @@ mod state;
 mod terminal;
 pub mod ui;
 
-pub use runtime::{LogBuffer, LogBufferHandle, LogWriterFactory, run_tui_with_log};
 pub(crate) use runtime::LOG_BUFFER_CAPACITY;
+pub use runtime::{LogBuffer, LogBufferHandle, LogWriterFactory, run_tui_with_log};

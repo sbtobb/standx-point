@@ -30,8 +30,8 @@ use standx_point_adapter::{
     StandxClient, SymbolPrice, TimeInForce,
 };
 
-use crate::order_state::{OrderState, OrderTracker};
 use crate::metrics::TaskMetrics;
+use crate::order_state::{OrderState, OrderTracker};
 use crate::risk::{RiskManager, RiskState};
 
 const BPS_DENOMINATOR: i64 = 10_000;
@@ -690,7 +690,8 @@ impl MarketMakingStrategy {
                     continue;
                 }
                 let slot = QuoteSlot { tier: *tier, side };
-                self.refresh_slot(executor, now, reference_price, slot).await?;
+                self.refresh_slot(executor, now, reference_price, slot)
+                    .await?;
             }
         }
 
@@ -717,7 +718,8 @@ impl MarketMakingStrategy {
         slot: QuoteSlot,
     ) -> Result<()> {
         let target_bps = self.target_bps_for_tier(slot.tier);
-        let mut desired_price = price_at_bps(reference_price, slot.side.to_order_side(), target_bps);
+        let mut desired_price =
+            price_at_bps(reference_price, slot.side.to_order_side(), target_bps);
         desired_price = self.align_price_for_order(desired_price);
         let desired_qty = self.desired_qty_for_slot(slot.tier, slot.side, target_bps, now);
         let capped_qty = self.cap_qty_for_inventory(slot.side, desired_qty, reference_price);
@@ -793,12 +795,9 @@ impl MarketMakingStrategy {
                     });
 
                     if now >= cancel.deadline {
-                        if cancel
-                            .last_reconcile_at
-                            .is_none_or(|last| {
-                                now.saturating_duration_since(last) >= CANCEL_RECONCILE_COOLDOWN
-                            })
-                        {
+                        if cancel.last_reconcile_at.is_none_or(|last| {
+                            now.saturating_duration_since(last) >= CANCEL_RECONCILE_COOLDOWN
+                        }) {
                             request_reconcile = true;
                             cancel.last_reconcile_at = Some(now);
                         }
@@ -810,7 +809,11 @@ impl MarketMakingStrategy {
                         }
                     }
 
-                    cancel_action = Some((still_live.cl_ord_id.clone(), request_reconcile, retry_cancel));
+                    cancel_action = Some((
+                        still_live.cl_ord_id.clone(),
+                        request_reconcile,
+                        retry_cancel,
+                    ));
                 }
             }
 
@@ -912,7 +915,7 @@ impl MarketMakingStrategy {
             effective_qty,
             reference_price,
         )
-            .await?;
+        .await?;
         Ok(())
     }
 
@@ -939,14 +942,19 @@ impl MarketMakingStrategy {
         }
     }
 
-    fn should_refresh_for_price(&self, reference_price: Decimal, now: tokio::time::Instant) -> bool {
+    fn should_refresh_for_price(
+        &self,
+        reference_price: Decimal,
+        now: tokio::time::Instant,
+    ) -> bool {
         if reference_price <= Decimal::ZERO {
             return false;
         }
 
         for (slot, quote) in self.live_quotes.iter() {
             let (band_min, band_max) = self.quote_band_for_tier(slot.tier);
-            let current_bps = bps_from_price(reference_price, slot.side.to_order_side(), quote.price);
+            let current_bps =
+                bps_from_price(reference_price, slot.side.to_order_side(), quote.price);
             if current_bps < band_min || current_bps > band_max {
                 return true;
             }
@@ -1364,7 +1372,9 @@ impl MarketMakingStrategy {
             && aligned > max_qty
         {
             aligned = match self.qty_tick_decimals {
-                Some(decimals) => max_qty.round_dp_with_strategy(decimals, RoundingStrategy::ToZero),
+                Some(decimals) => {
+                    max_qty.round_dp_with_strategy(decimals, RoundingStrategy::ToZero)
+                }
                 None => max_qty,
             };
         }
@@ -1415,7 +1425,11 @@ impl MarketMakingStrategy {
             price * (Decimal::ONE - ratio)
         };
         let aligned = self.align_price_for_order(adjusted);
-        if aligned > Decimal::ZERO { Some(aligned) } else { None }
+        if aligned > Decimal::ZERO {
+            Some(aligned)
+        } else {
+            None
+        }
     }
 }
 
@@ -1495,8 +1509,8 @@ mod tests {
     use super::*;
 
     use crate::risk::RiskManager;
-    use std::str::FromStr;
     use standx_point_adapter::ws::message::OrderUpdateData;
+    use std::str::FromStr;
     use tokio::sync::mpsc;
 
     fn dec(value: &str) -> Decimal {
@@ -1511,9 +1525,18 @@ mod tests {
 
     #[test]
     fn l1_drift_check_ready_bypasses_rest_when_within_two_bps() {
-        assert!(l1_drift_check_ready(std::time::Duration::from_secs(1), dec("1.99")));
-        assert!(!l1_drift_check_ready(std::time::Duration::from_secs(1), dec("2")));
-        assert!(l1_drift_check_ready(std::time::Duration::from_secs(3), dec("8")));
+        assert!(l1_drift_check_ready(
+            std::time::Duration::from_secs(1),
+            dec("1.99")
+        ));
+        assert!(!l1_drift_check_ready(
+            std::time::Duration::from_secs(1),
+            dec("2")
+        ));
+        assert!(l1_drift_check_ready(
+            std::time::Duration::from_secs(3),
+            dec("8")
+        ));
     }
 
     #[test]

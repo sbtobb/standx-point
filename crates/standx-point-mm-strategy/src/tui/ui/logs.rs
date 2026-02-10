@@ -9,8 +9,8 @@
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::tui::runtime::border_style;
 use crate::tui::LogBufferHandle;
+use crate::tui::runtime::border_style;
 
 pub(in crate::tui) fn draw_logs(
     frame: &mut ratatui::Frame,

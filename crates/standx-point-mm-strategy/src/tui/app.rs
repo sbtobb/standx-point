@@ -16,26 +16,26 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
-use base64::engine::general_purpose::STANDARD;
+use anyhow::{Context, Result, anyhow};
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use ratatui::widgets::ListState;
 use rust_decimal::Decimal;
 use standx_point_adapter::auth::{EvmWalletSigner, SolanaWalletSigner};
 use standx_point_adapter::{
     AuthManager, Balance, Chain, Order, Position, StandxClient, WalletSigner,
 };
+use standx_point_mm_strategy::TaskManager;
 use standx_point_mm_strategy::metrics::TaskMetricsSnapshot;
 use standx_point_mm_strategy::task::TaskRuntimeStatus;
-use standx_point_mm_strategy::TaskManager;
 use tokio::sync::Mutex as TokioMutex;
 use uuid::Uuid;
 
 use crate::cli::interactive::build_strategy_config;
 use crate::state::storage::{Account as StoredAccount, Storage, Task as StoredTask};
-use crate::tui::ui::modal::{CreateAccountModal, CreateTaskModal};
-use crate::tui::runtime::LIVE_REFRESH_INTERVAL;
 use crate::tui::LogBufferHandle;
+use crate::tui::runtime::LIVE_REFRESH_INTERVAL;
+use crate::tui::ui::modal::{CreateAccountModal, CreateTaskModal};
 
 #[allow(dead_code)]
 pub(super) enum AppMode {
@@ -148,7 +148,12 @@ impl AppState {
         let account_options = self
             .accounts
             .iter()
-            .map(|account| (account.id.clone(), format!("{} | {}", account.id, account.name)))
+            .map(|account| {
+                (
+                    account.id.clone(),
+                    format!("{} | {}", account.id, account.name),
+                )
+            })
             .collect();
         let symbols = default_task_symbols();
         let id = Uuid::new_v4().to_string();
@@ -240,7 +245,8 @@ impl AppState {
             .cloned()
             .ok_or_else(|| anyhow!("no task selected"))?;
 
-        let config = build_strategy_config(&self.storage, std::slice::from_ref(&task), true).await?;
+        let config =
+            build_strategy_config(&self.storage, std::slice::from_ref(&task), true).await?;
 
         let mut manager = self.task_manager.lock().await;
         if manager.runtime_status(&task.id).is_some() {
