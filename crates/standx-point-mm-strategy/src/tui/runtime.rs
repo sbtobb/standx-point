@@ -19,23 +19,23 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use crossterm::event::Event as CrosstermEvent;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use rust_decimal::Decimal;
-use tokio::sync::mpsc;
 use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::fmt::MakeWriter;
 
 use standx_point_adapter::{
     Chain, Credentials, Order, OrderStatus, PaginatedOrders, StandxClient, StandxError,
 };
-use standx_point_mm_strategy::task::TaskRuntimeStatus;
 use standx_point_mm_strategy::TaskManager;
+use standx_point_mm_strategy::task::TaskRuntimeStatus;
 
 use super::app::{ActiveModal, AppState, Tab, UiSnapshot};
 use super::events::handle_key_event;
@@ -136,11 +136,7 @@ enum UiEvent {
     Input(CrosstermEvent),
 }
 
-pub(super) fn draw_footer(
-    frame: &mut ratatui::Frame,
-    area: ratatui::layout::Rect,
-    app: &AppState,
-) {
+pub(super) fn draw_footer(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &AppState) {
     let key_style = Style::default()
         .fg(Color::Black)
         .bg(Color::Yellow)
@@ -191,9 +187,13 @@ pub(crate) fn header_style() -> Style {
 
 pub(crate) fn signed_style(value: Decimal) -> Style {
     if value.is_sign_negative() {
-        Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::LightRed)
+            .add_modifier(Modifier::BOLD)
     } else if value.is_sign_positive() {
-        Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::LightGreen)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     }
@@ -213,7 +213,8 @@ pub(crate) fn format_decimal(value: Decimal, scale: u32) -> String {
 }
 
 pub(crate) fn build_live_client(account: &StoredAccount) -> Result<StandxClient> {
-    let mut client = StandxClient::new().map_err(|err| anyhow!("create StandxClient failed: {err}"))?;
+    let mut client =
+        StandxClient::new().map_err(|err| anyhow!("create StandxClient failed: {err}"))?;
     let chain = account.chain.unwrap_or(Chain::Bsc);
     let wallet_address = "unknown".to_string();
     client.set_credentials(Credentials {
@@ -409,7 +410,11 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut AppState, snapshot: &UiSnapshot
     }
 }
 
-fn centered_rect(area: ratatui::layout::Rect, percent_x: u16, percent_y: u16) -> ratatui::layout::Rect {
+fn centered_rect(
+    area: ratatui::layout::Rect,
+    percent_x: u16,
+    percent_y: u16,
+) -> ratatui::layout::Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

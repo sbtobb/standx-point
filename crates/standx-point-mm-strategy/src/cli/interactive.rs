@@ -368,7 +368,21 @@ async fn create_task(storage: Arc<Storage>, theme: &ColorfulTheme) -> Result<()>
         .default("50000".to_string())
         .interact_text()?;
 
-    let task = Task::new(id, symbol, account_id, risk_level, budget_usd);
+    let tp_bps_raw: String = Input::with_theme(theme)
+        .with_prompt("Take-profit bps (optional)")
+        .default(String::new())
+        .interact_text()?;
+    let sl_bps_raw: String = Input::with_theme(theme)
+        .with_prompt("Stop-loss bps (optional)")
+        .default(String::new())
+        .interact_text()?;
+
+    let tp_bps = non_empty(&tp_bps_raw);
+    let sl_bps = non_empty(&sl_bps_raw);
+
+    let task = Task::new_with_tp_sl(
+        id, symbol, account_id, risk_level, budget_usd, tp_bps, sl_bps,
+    );
     storage.create_task(task).await.context("create task")?;
     println!("{}", style("Task created.").green());
     Ok(())
@@ -453,12 +467,26 @@ async fn edit_task(storage: Arc<Storage>, theme: &ColorfulTheme) -> Result<()> {
         .default(task.budget_usd.clone())
         .interact_text()?;
 
+    let tp_bps_raw: String = Input::with_theme(theme)
+        .with_prompt("Take-profit bps (optional)")
+        .default(task.tp_bps.clone().unwrap_or_default())
+        .interact_text()?;
+    let sl_bps_raw: String = Input::with_theme(theme)
+        .with_prompt("Stop-loss bps (optional)")
+        .default(task.sl_bps.clone().unwrap_or_default())
+        .interact_text()?;
+
+    let tp_bps = non_empty(&tp_bps_raw);
+    let sl_bps = non_empty(&sl_bps_raw);
+
     storage
         .update_task(&task.id, |stored| {
             stored.symbol = symbol;
             stored.account_id = account_id;
             stored.risk_level = risk_level;
             stored.budget_usd = budget_usd;
+            stored.tp_bps = tp_bps;
+            stored.sl_bps = sl_bps;
         })
         .await?;
 
@@ -514,8 +542,8 @@ pub(crate) async fn build_strategy_config(
                 level: task.risk_level.clone(),
                 budget_usd: task.budget_usd.clone(),
                 guard_close_enabled: None,
-                tp_bps: None,
-                sl_bps: None,
+                tp_bps: task.tp_bps.clone(),
+                sl_bps: task.sl_bps.clone(),
             },
         };
         configs.push(task_config);
@@ -624,8 +652,14 @@ fn print_strategy_summary(config: &StrategyConfig) {
     println!("{}", style("Selected task parameters").bold());
     for task in &config.tasks {
         println!(
-            "- {} | {} | account={} | risk={} | budget_usd={}",
-            task.id, task.symbol, task.account_id, task.risk.level, task.risk.budget_usd
+            "- {} | {} | account={} | risk={} | budget_usd={} | tp_bps={:?} | sl_bps={:?}",
+            task.id,
+            task.symbol,
+            task.account_id,
+            task.risk.level,
+            task.risk.budget_usd,
+            task.risk.tp_bps,
+            task.risk.sl_bps
         );
     }
 }

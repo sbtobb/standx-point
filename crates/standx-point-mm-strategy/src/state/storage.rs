@@ -1,8 +1,10 @@
 use anyhow::{Result, anyhow};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use standx_point_adapter::Chain;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use tokio::fs;
 use tokio::sync::Mutex;
 
@@ -69,6 +71,10 @@ pub struct Task {
     pub risk_level: String,
     #[serde(alias = "max_position_usd")]
     pub budget_usd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tp_bps: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sl_bps: Option<String>,
     pub state: TaskState,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -82,13 +88,25 @@ pub enum TaskState {
 }
 
 impl Task {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: String,
         symbol: String,
         account_id: String,
         risk_level: String,
         budget_usd: String,
+    ) -> Self {
+        Self::new_with_tp_sl(id, symbol, account_id, risk_level, budget_usd, None, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_tp_sl(
+        id: String,
+        symbol: String,
+        account_id: String,
+        risk_level: String,
+        budget_usd: String,
+        tp_bps: Option<String>,
+        sl_bps: Option<String>,
     ) -> Self {
         let now = chrono::Utc::now();
         Self {
@@ -97,6 +115,8 @@ impl Task {
             account_id,
             risk_level,
             budget_usd,
+            tp_bps,
+            sl_bps,
             state: TaskState::Stopped,
             created_at: now,
             updated_at: now,
@@ -116,8 +136,29 @@ impl Task {
         if self.budget_usd.is_empty() {
             return Err(anyhow!("Budget USD cannot be empty"));
         }
+        validate_optional_bps(&self.tp_bps, "tp_bps")?;
+        validate_optional_bps(&self.sl_bps, "sl_bps")?;
         Ok(())
     }
+}
+
+fn validate_optional_bps(raw: &Option<String>, field: &str) -> Result<()> {
+    let Some(raw) = raw.as_ref() else {
+        return Ok(());
+    };
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+
+    let parsed =
+        Decimal::from_str(trimmed).map_err(|err| anyhow!("{field} must be a number: {err}"))?;
+    if parsed <= Decimal::ZERO {
+        return Err(anyhow!("{field} must be > 0"));
+    }
+
+    Ok(())
 }
 
 /// Storage manager for accounts and tasks
@@ -341,5 +382,59 @@ impl Storage {
         fs::write(&temp_path, content).await?;
         fs::rename(&temp_path, &self.tasks_path).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Task;
+
+    #[test]
+    fn task_deserialize_legacy_without_tp_sl() {
+        let raw = r#"{
+            "id": "task-1",
+            "symbol": "BTC-USD",
+            "account_id": "account-1",
+            "risk_level": "low",
+            "budget_usd": "50000",
+            "state": "Stopped",
+            "created_at": "2026-02-10T00:00:00Z",
+            "updated_at": "2026-02-10T00:00:00Z"
+        }"#;
+
+        let task: Task = serde_json::from_str(raw).expect("deserialize legacy task");
+        assert_eq!(task.tp_bps, None);
+        assert_eq!(task.sl_bps, None);
+    }
+
+    #[test]
+    fn task_validate_rejects_non_positive_bps() {
+        let task = Task::new_with_tp_sl(
+            "task-1".to_string(),
+            "BTC-USD".to_string(),
+            "account-1".to_string(),
+            "low".to_string(),
+            "50000".to_string(),
+            Some("0".to_string()),
+            Some("-1".to_string()),
+        );
+
+        let err = task.validate().expect_err("should reject invalid bps");
+        assert!(err.to_string().contains("tp_bps must be > 0"));
+    }
+
+    #[test]
+    fn task_validate_accepts_positive_bps() {
+        let task = Task::new_with_tp_sl(
+            "task-1".to_string(),
+            "BTC-USD".to_string(),
+            "account-1".to_string(),
+            "low".to_string(),
+            "50000".to_string(),
+            Some("30".to_string()),
+            Some("20".to_string()),
+        );
+
+        task.validate().expect("should accept valid bps");
     }
 }

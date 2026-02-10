@@ -12,7 +12,7 @@
 use crossterm::event::KeyCode;
 use standx_point_adapter::Chain;
 
-use super::{handle_modal_key, Field, Modal, ModalAction};
+use super::{Field, Modal, ModalAction, handle_modal_key};
 
 #[allow(dead_code)]
 pub(in crate::tui) struct CreateAccountModal {

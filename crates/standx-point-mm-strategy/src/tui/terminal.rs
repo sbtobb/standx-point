@@ -9,9 +9,9 @@ use std::io;
 
 use anyhow::Result;
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::{terminal, ExecutableCommand};
-use ratatui::backend::CrosstermBackend;
+use crossterm::{ExecutableCommand, terminal};
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
 pub(super) struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,

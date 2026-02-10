@@ -673,13 +673,13 @@ fn looks_like_position(value: &Value) -> bool {
         return channel == "position";
     }
 
-        for key in ["topic", "type", "event", "action"] {
-            if let Some(value) = value.get(key).and_then(|entry| entry.as_str())
-                && value.contains("position")
-            {
-                return true;
-            }
+    for key in ["topic", "type", "event", "action"] {
+        if let Some(value) = value.get(key).and_then(|entry| entry.as_str())
+            && value.contains("position")
+        {
+            return true;
         }
+    }
 
     if let Some(data) = value.get("data") {
         if data.get("symbol").is_some() && data.get("qty").is_some() {

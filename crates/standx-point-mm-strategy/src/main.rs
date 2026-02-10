@@ -223,7 +223,12 @@ async fn run_tui_mode(log_buffer: tui::LogBufferHandle) -> Result<()> {
     let shutdown = { task_manager.lock().await.shutdown_token() };
     setup_signal_handlers(shutdown.clone());
 
-    tui::run_tui_with_log(task_manager.clone(), Arc::new(state::storage::Storage::new().await?), log_buffer).await?;
+    tui::run_tui_with_log(
+        task_manager.clone(),
+        Arc::new(state::storage::Storage::new().await?),
+        log_buffer,
+    )
+    .await?;
 
     task_manager
         .lock()

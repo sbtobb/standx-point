@@ -9,10 +9,12 @@
 
 use std::time::Instant;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 use super::app::{AppState, LiveTaskData, PriceSnapshot, UiSnapshot};
-use crate::tui::runtime::{build_live_client, query_open_orders_with_fallback, LIVE_REFRESH_INTERVAL};
+use crate::tui::runtime::{
+    LIVE_REFRESH_INTERVAL, build_live_client, query_open_orders_with_fallback,
+};
 
 impl AppState {
     pub(super) async fn refresh_accounts(&mut self) -> Result<()> {
@@ -29,7 +31,8 @@ impl AppState {
             self.list_state.select(Some(0));
         } else if let Some(selected) = self.list_state.selected() {
             if selected >= self.tasks.len() {
-                self.list_state.select(Some(self.tasks.len().saturating_sub(1)));
+                self.list_state
+                    .select(Some(self.tasks.len().saturating_sub(1)));
             }
         }
         self.last_refresh = Instant::now();
