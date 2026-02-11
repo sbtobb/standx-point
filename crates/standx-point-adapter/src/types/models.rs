@@ -79,12 +79,18 @@ pub struct Order {
     #[serde(
         default,
         with = "rust_decimal::serde::str_option",
+        alias = "tpPrice",
+        alias = "take_profit_price",
+        alias = "takeProfitPrice",
         skip_serializing_if = "Option::is_none"
     )]
     pub tp_price: Option<Decimal>,
     #[serde(
         default,
         with = "rust_decimal::serde::str_option",
+        alias = "slPrice",
+        alias = "stop_loss_price",
+        alias = "stopLossPrice",
         skip_serializing_if = "Option::is_none"
     )]
     pub sl_price: Option<Decimal>,
@@ -454,5 +460,40 @@ mod tests {
         let order: Order = serde_json::from_value(value).expect("order should deserialize");
 
         assert_eq!(order.margin, Decimal::ZERO);
+    }
+
+    #[test]
+    fn order_deserializes_tp_sl_from_camel_case_aliases() {
+        let value = json!({
+            "cl_ord_id": "cl-1",
+            "closed_block": 0,
+            "created_at": "0",
+            "created_block": 0,
+            "fill_avg_price": "0",
+            "fill_qty": "0",
+            "id": 1,
+            "leverage": "1",
+            "liq_id": 0,
+            "order_type": "limit",
+            "position_id": 0,
+            "price": "100",
+            "qty": "1",
+            "reduce_only": false,
+            "remark": "",
+            "side": "buy",
+            "source": "test",
+            "status": "open",
+            "symbol": "BTC-USD",
+            "time_in_force": "gtc",
+            "tpPrice": "101",
+            "slPrice": "99",
+            "updated_at": "0",
+            "user": "user"
+        });
+
+        let order: Order = serde_json::from_value(value).expect("order should deserialize");
+
+        assert_eq!(order.tp_price, Some(Decimal::from(101)));
+        assert_eq!(order.sl_price, Some(Decimal::from(99)));
     }
 }
