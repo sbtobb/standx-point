@@ -18,15 +18,10 @@ pub(in crate::tui) fn draw_tabs(
     area: ratatui::layout::Rect,
     current_tab: Tab,
 ) {
-    let titles = vec![
-        Line::from("Dashboard"),
-        Line::from("Logs"),
-        Line::from("Create"),
-    ];
+    let titles = vec![Line::from("Dashboard"), Line::from("Create")];
     let selected = match current_tab {
         Tab::Dashboard => 0,
-        Tab::Logs => 1,
-        Tab::Create => 2,
+        Tab::Create => 1,
     };
 
     let tabs = Tabs::new(titles)

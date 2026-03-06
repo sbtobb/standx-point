@@ -12,6 +12,7 @@
 [UPDATE]: 2026-02-07 Guard positions with fee-aware limit exits
 [UPDATE]: 2026-02-08 Support wallet private key auth configuration
 [UPDATE]: 2026-02-09 Add order reconcile loop for cancel ack gating
+[UPDATE]: 2026-03-06 Always sync authoritative position into strategy inventory.
 */
 
 use crate::config::{AccountConfig, StrategyConfig, TaskConfig};
@@ -31,6 +32,7 @@ use standx_point_adapter::{
     StandxWebSocket, SymbolInfo, SymbolPrice, TimeInForce, WebSocketMessage,
 };
 use std::collections::HashMap;
+use std::future::pending;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Once};
@@ -122,11 +124,6 @@ fn fee_bps_total_from_symbol_info(symbol_info: Option<&SymbolInfo>) -> Decimal {
     } else {
         Decimal::from(DEFAULT_FEE_BPS * 2)
     }
-}
-
-async fn guard_loop_disabled(shutdown: CancellationToken) -> Result<()> {
-    shutdown.cancelled().await;
-    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -724,6 +721,7 @@ impl Task {
             let mut metrics = self.metrics.lock().await;
             metrics.record_position_qty(initial_position_qty);
         }
+        let (position_tx, position_rx) = watch::channel(initial_position_qty);
         let order_tracker = Arc::new(Mutex::new(OrderTracker::new()));
         let order_tracker_ws = order_tracker.clone();
         let order_tracker_reconcile = order_tracker.clone();
@@ -741,6 +739,7 @@ impl Task {
             tp_bps,
             sl_bps,
             self.price_rx.clone(),
+            position_rx,
             order_tracker,
             reconcile_tx,
             mode,
@@ -792,24 +791,22 @@ impl Task {
         let symbol = &self.config.symbol;
         let price_rx = self.price_rx.clone();
         let symbol_cache = self.symbol_cache.clone();
-        let guard_future: std::pin::Pin<
+        let position_future: std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<()>> + Send + '_>,
-        > = if guard_close_enabled {
-            Box::pin(Self::position_guard_ws_loop(
-                client,
-                id,
-                task_id,
-                account_jwt,
-                symbol,
-                price_rx,
-                symbol_cache,
-                risk_level,
-                self.metrics.clone(),
-                guard_shutdown.clone(),
-            ))
-        } else {
-            Box::pin(guard_loop_disabled(guard_shutdown.clone()))
-        };
+        > = Box::pin(Self::position_sync_loop(
+            client,
+            id,
+            task_id,
+            account_jwt,
+            symbol,
+            price_rx,
+            symbol_cache,
+            risk_level,
+            self.metrics.clone(),
+            position_tx,
+            guard_close_enabled,
+            guard_shutdown.clone(),
+        ));
         let order_future = Self::order_ws_loop(
             id,
             task_id,
@@ -830,7 +827,7 @@ impl Task {
             reconcile_shutdown.clone(),
         );
         let strategy_future = strategy.run(&self.client, self.shutdown.clone());
-        tokio::pin!(guard_future);
+        tokio::pin!(position_future);
         tokio::pin!(order_future);
         tokio::pin!(reconcile_future);
         tokio::pin!(strategy_future);
@@ -840,12 +837,12 @@ impl Task {
                 guard_shutdown.cancel();
                 order_shutdown.cancel();
                 reconcile_shutdown.cancel();
-                if let Err(err) = guard_future.await {
+                if let Err(err) = position_future.await {
                     tracing::warn!(
                         task_uuid = %self.id,
                         task_id = %self.config.id,
                         symbol = %self.config.symbol,
-                        "position guard exited with error: {err}"
+                        "position sync loop exited with error: {err}"
                     );
                 }
                 if let Err(err) = order_future.await {
@@ -866,13 +863,13 @@ impl Task {
                 }
                 res
             }
-            res = &mut guard_future => {
+            res = &mut position_future => {
                 if let Err(err) = res {
                     tracing::warn!(
                         task_uuid = %self.id,
                         task_id = %self.config.id,
                         symbol = %self.config.symbol,
-                        "position guard exited with error: {err}"
+                        "position sync loop exited with error: {err}"
                     );
                 }
                 let res = strategy_future.await;
@@ -908,12 +905,12 @@ impl Task {
                 let res = strategy_future.await;
                 guard_shutdown.cancel();
                 reconcile_shutdown.cancel();
-                if let Err(err) = guard_future.await {
+                if let Err(err) = position_future.await {
                     tracing::warn!(
                         task_uuid = %self.id,
                         task_id = %self.config.id,
                         symbol = %self.config.symbol,
-                        "position guard exited with error: {err}"
+                        "position sync loop exited with error: {err}"
                     );
                 }
                 if let Err(err) = reconcile_future.await {
@@ -938,12 +935,12 @@ impl Task {
                 let res = strategy_future.await;
                 guard_shutdown.cancel();
                 order_shutdown.cancel();
-                if let Err(err) = guard_future.await {
+                if let Err(err) = position_future.await {
                     tracing::warn!(
                         task_uuid = %self.id,
                         task_id = %self.config.id,
                         symbol = %self.config.symbol,
-                        "position guard exited with error: {err}"
+                        "position sync loop exited with error: {err}"
                     );
                 }
                 if let Err(err) = order_future.await {
@@ -1619,7 +1616,7 @@ impl Task {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn position_guard_ws_loop(
+    async fn position_sync_loop(
         client: &StandxClient,
         task_uuid: Uuid,
         task_id: &str,
@@ -1629,51 +1626,35 @@ impl Task {
         symbol_cache: Arc<Mutex<SymbolCache>>,
         risk_level: RiskLevel,
         metrics: Arc<Mutex<TaskMetrics>>,
+        position_tx: watch::Sender<Decimal>,
+        guard_close_enabled: bool,
         shutdown: CancellationToken,
     ) -> Result<()> {
-        if account_jwt.trim().is_empty() {
+        let (mut position_ws, mut ws_rx) = if account_jwt.trim().is_empty() {
             tracing::warn!(
                 task_uuid = %task_uuid,
                 task_id = %task_id,
-                "position guard disabled: missing account jwt"
+                "position sync ws unavailable: missing account jwt; falling back to polling"
             );
-            return Ok(());
-        }
+            (None, None)
+        } else {
+            match Self::connect_position_stream(account_jwt).await {
+                Ok((ws, rx)) => (Some(ws), Some(rx)),
+                Err(err) => {
+                    tracing::warn!(
+                        task_uuid = %task_uuid,
+                        task_id = %task_id,
+                        "position sync ws setup failed: {err}; falling back to polling"
+                    );
+                    (None, None)
+                }
+            }
+        };
 
-        let mut ws = StandxWebSocket::new();
-        if let Err(err) = ws.connect_market_stream().await {
-            tracing::warn!(
-                task_uuid = %task_uuid,
-                task_id = %task_id,
-                "position guard ws connect failed: {err}"
-            );
-            return Ok(());
-        }
-
-        let streams = ["position"];
-        if let Err(err) = ws.authenticate(account_jwt, Some(&streams)).await {
-            tracing::warn!(
-                task_uuid = %task_uuid,
-                task_id = %task_id,
-                "position guard ws auth failed: {err}"
-            );
-            return Ok(());
-        }
-
-        if let Err(err) = ws.subscribe_positions().await {
-            tracing::warn!(
-                task_uuid = %task_uuid,
-                task_id = %task_id,
-                "position guard ws subscribe failed: {err}"
-            );
-            return Ok(());
-        }
-
-        let mut rx = ws
-            .take_receiver()
-            .ok_or_else(|| anyhow!("position guard ws receiver already taken"))?;
-
-        let mut guard_state = PositionGuardState::default();
+        let mut guard_state = PositionGuardState {
+            position_qty: *position_tx.borrow(),
+            ..Default::default()
+        };
         let mut position_poll = tokio::time::interval_at(
             Instant::now() + POSITION_GUARD_POLL_INTERVAL,
             POSITION_GUARD_POLL_INTERVAL,
@@ -1688,9 +1669,18 @@ impl Task {
                     }
                     return Ok(());
                 }
-                msg = rx.recv() => {
+                msg = Self::recv_position_ws_message(&mut ws_rx) => {
                     let Some(message) = msg else {
-                        return Ok(());
+                        if position_ws.is_some() {
+                            tracing::warn!(
+                                task_uuid = %task_uuid,
+                                task_id = %task_id,
+                                "position sync ws ended; continuing with polling"
+                            );
+                        }
+                        position_ws = None;
+                        ws_rx = None;
+                        continue;
                     };
 
                     let WebSocketMessage::Position { data } = message else {
@@ -1706,13 +1696,14 @@ impl Task {
                         if update.symbol != task_symbol {
                             continue;
                         }
+
                         let mark_price = price_rx.borrow().mark_price;
                         let symbol_info = {
                             let cache = symbol_cache.lock().await;
                             cache.symbols.get(task_symbol).cloned()
                         };
 
-                        Self::apply_position_guard_update(
+                        Self::apply_position_update(
                             client,
                             task_uuid,
                             task_id,
@@ -1722,6 +1713,9 @@ impl Task {
                             symbol_info,
                             risk_level,
                             &metrics,
+                            &position_tx,
+                            guard_close_enabled,
+                            PositionUpdateSource::Ws,
                             &mut guard_state,
                         ).await;
                     }
@@ -1737,15 +1731,16 @@ impl Task {
                                 task_uuid = %task_uuid,
                                 task_id = %task_id,
                                 symbol = %task_symbol,
-                                "position guard poll query_positions failed: {err}"
+                                "position sync poll query_positions failed: {err}"
                             );
                             continue;
                         }
                     };
 
                     let needs_update = polled_qty != guard_state.position_qty
-                        || (polled_qty.is_zero() && guard_state.guard_order.is_some())
-                        || (!polled_qty.is_zero() && guard_state.guard_order.is_none());
+                        || (guard_close_enabled
+                            && ((polled_qty.is_zero() && guard_state.guard_order.is_some())
+                                || (!polled_qty.is_zero() && guard_state.guard_order.is_none())));
 
                     if !needs_update {
                         continue;
@@ -1757,7 +1752,7 @@ impl Task {
                         symbol = %task_symbol,
                         polled_qty = %polled_qty,
                         cached_qty = %guard_state.position_qty,
-                        "position guard poll detected mismatch"
+                        "position sync poll detected mismatch"
                     );
 
                     let mark_price = price_rx.borrow().mark_price;
@@ -1766,7 +1761,7 @@ impl Task {
                         cache.symbols.get(task_symbol).cloned()
                     };
 
-                    Self::apply_position_guard_update(
+                    Self::apply_position_update(
                         client,
                         task_uuid,
                         task_id,
@@ -1776,11 +1771,14 @@ impl Task {
                         symbol_info,
                         risk_level,
                         &metrics,
+                        &position_tx,
+                        guard_close_enabled,
+                        PositionUpdateSource::Poll,
                         &mut guard_state,
                     ).await;
                 }
                 changed = price_rx.changed() => {
-                    if changed.is_err() {
+                    if changed.is_err() || !guard_close_enabled {
                         continue;
                     }
 
@@ -1868,6 +1866,140 @@ impl Task {
         }
     }
 
+    async fn connect_position_stream(
+        account_jwt: &str,
+    ) -> Result<(StandxWebSocket, mpsc::Receiver<WebSocketMessage>)> {
+        let mut ws = StandxWebSocket::new();
+        ws.connect_market_stream()
+            .await
+            .map_err(|err| anyhow!("connect failed: {err}"))?;
+
+        let streams = ["position"];
+        ws.authenticate(account_jwt, Some(&streams))
+            .await
+            .map_err(|err| anyhow!("authenticate failed: {err}"))?;
+
+        ws.subscribe_positions()
+            .await
+            .map_err(|err| anyhow!("subscribe failed: {err}"))?;
+
+        let rx = ws
+            .take_receiver()
+            .ok_or_else(|| anyhow!("position sync ws receiver already taken"))?;
+
+        Ok((ws, rx))
+    }
+
+    async fn recv_position_ws_message(
+        ws_rx: &mut Option<mpsc::Receiver<WebSocketMessage>>,
+    ) -> Option<WebSocketMessage> {
+        match ws_rx {
+            Some(rx) => rx.recv().await,
+            None => pending::<Option<WebSocketMessage>>().await,
+        }
+    }
+
+    async fn publish_position_qty(
+        metrics: &Arc<Mutex<TaskMetrics>>,
+        position_tx: &watch::Sender<Decimal>,
+        position_qty: Decimal,
+    ) -> bool {
+        {
+            let mut metrics = metrics.lock().await;
+            metrics.record_position_qty(position_qty);
+        }
+
+        position_tx.send_if_modified(|current| {
+            if *current == position_qty {
+                false
+            } else {
+                *current = position_qty;
+                true
+            }
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_position_update(
+        client: &StandxClient,
+        task_uuid: Uuid,
+        task_id: &str,
+        task_symbol: &str,
+        position_qty: Decimal,
+        mark_price: Decimal,
+        symbol_info: Option<SymbolInfo>,
+        risk_level: RiskLevel,
+        metrics: &Arc<Mutex<TaskMetrics>>,
+        position_tx: &watch::Sender<Decimal>,
+        guard_close_enabled: bool,
+        source: PositionUpdateSource,
+        guard_state: &mut PositionGuardState,
+    ) {
+        let changed = Self::publish_position_qty(metrics, position_tx, position_qty).await;
+        if changed {
+            tracing::info!(
+                task_uuid = %task_uuid,
+                task_id = %task_id,
+                symbol = %task_symbol,
+                source = source.as_str(),
+                position_qty = %position_qty,
+                "position sync updated"
+            );
+        }
+
+        if position_qty.is_zero() {
+            guard_state.position_qty = Decimal::ZERO;
+            if let Some(order) = guard_state.guard_order.take() {
+                Self::cancel_guard_order(client, task_uuid, task_id, &order.cl_ord_id).await;
+            }
+            return;
+        }
+
+        guard_state.position_qty = position_qty;
+        if !guard_close_enabled {
+            return;
+        }
+
+        let policy = exit_guard_policy_for_risk(risk_level, symbol_info.as_ref());
+
+        if let Some(last_close) = guard_state.last_force_close
+            && last_close.elapsed() < POSITION_GUARD_COOLDOWN
+        {
+            return;
+        }
+
+        let Some((side, price)) =
+            exit_price_for_position(mark_price, position_qty, policy, symbol_info.as_ref())
+        else {
+            tracing::warn!(
+                task_uuid = %task_uuid,
+                task_id = %task_id,
+                symbol = %task_symbol,
+                qty = %position_qty,
+                "position guard skipped: invalid mark price or exit price"
+            );
+            return;
+        };
+
+        let qty = position_qty.abs();
+        if let Some(existing) = guard_state.guard_order.as_ref()
+            && existing.side == side
+            && existing.price == price
+            && existing.qty == qty
+        {
+            return;
+        }
+
+        if let Some(order) = guard_state.guard_order.take() {
+            Self::cancel_guard_order(client, task_uuid, task_id, &order.cl_ord_id).await;
+        }
+
+        if let Some(order) =
+            Self::place_guard_order(client, task_uuid, task_id, task_symbol, side, qty, price).await
+        {
+            guard_state.guard_order = Some(order);
+        }
+    }
     async fn order_ws_loop(
         task_uuid: Uuid,
         task_id: &str,
@@ -2180,77 +2312,6 @@ impl Task {
     }
 }
 
-impl Task {
-    #[allow(clippy::too_many_arguments)]
-    async fn apply_position_guard_update(
-        client: &StandxClient,
-        task_uuid: Uuid,
-        task_id: &str,
-        task_symbol: &str,
-        position_qty: Decimal,
-        mark_price: Decimal,
-        symbol_info: Option<SymbolInfo>,
-        risk_level: RiskLevel,
-        metrics: &Arc<Mutex<TaskMetrics>>,
-        guard_state: &mut PositionGuardState,
-    ) {
-        if position_qty.is_zero() {
-            guard_state.position_qty = Decimal::ZERO;
-            let mut metrics = metrics.lock().await;
-            metrics.record_position_qty(Decimal::ZERO);
-            if let Some(order) = guard_state.guard_order.take() {
-                Self::cancel_guard_order(client, task_uuid, task_id, &order.cl_ord_id).await;
-            }
-            return;
-        }
-
-        guard_state.position_qty = position_qty;
-        {
-            let mut metrics = metrics.lock().await;
-            metrics.record_position_qty(position_qty);
-        }
-        let policy = exit_guard_policy_for_risk(risk_level, symbol_info.as_ref());
-
-        if let Some(last_close) = guard_state.last_force_close
-            && last_close.elapsed() < POSITION_GUARD_COOLDOWN
-        {
-            return;
-        }
-
-        let Some((side, price)) =
-            exit_price_for_position(mark_price, position_qty, policy, symbol_info.as_ref())
-        else {
-            tracing::warn!(
-                task_uuid = %task_uuid,
-                task_id = %task_id,
-                symbol = %task_symbol,
-                qty = %position_qty,
-                "position guard skipped: invalid mark price or exit price"
-            );
-            return;
-        };
-
-        let qty = position_qty.abs();
-        if let Some(existing) = guard_state.guard_order.as_ref()
-            && existing.side == side
-            && existing.price == price
-            && existing.qty == qty
-        {
-            return;
-        }
-
-        if let Some(order) = guard_state.guard_order.take() {
-            Self::cancel_guard_order(client, task_uuid, task_id, &order.cl_ord_id).await;
-        }
-
-        if let Some(order) =
-            Self::place_guard_order(client, task_uuid, task_id, task_symbol, side, qty, price).await
-        {
-            guard_state.guard_order = Some(order);
-        }
-    }
-}
-
 impl Default for Task {
     fn default() -> Self {
         Self::new()
@@ -2336,6 +2397,21 @@ fn select_symbol_info(infos: Vec<SymbolInfo>, symbol: &str) -> Option<SymbolInfo
 struct WsPositionUpdate {
     symbol: String,
     qty: Decimal,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PositionUpdateSource {
+    Ws,
+    Poll,
+}
+
+impl PositionUpdateSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ws => "ws",
+            Self::Poll => "poll",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2686,6 +2762,38 @@ mod tests {
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].symbol, "SOL-USD");
     }
+
+    #[tokio::test]
+    async fn apply_position_update_publishes_qty_without_guard() {
+        let client = StandxClient::new().expect("standx client");
+        let metrics = Arc::new(Mutex::new(TaskMetrics::default()));
+        let (position_tx, position_rx) = watch::channel(dec("5"));
+        let mut guard_state = PositionGuardState::default();
+
+        Task::apply_position_update(
+            &client,
+            Uuid::nil(),
+            "task-1",
+            "BTC-USD",
+            Decimal::ZERO,
+            Decimal::ZERO,
+            None,
+            RiskLevel::Low,
+            &metrics,
+            &position_tx,
+            false,
+            PositionUpdateSource::Poll,
+            &mut guard_state,
+        )
+        .await;
+
+        assert_eq!(*position_rx.borrow(), Decimal::ZERO);
+        assert_eq!(guard_state.position_qty, Decimal::ZERO);
+
+        let snapshot = metrics.lock().await.snapshot();
+        assert_eq!(snapshot.position_qty, Decimal::ZERO);
+    }
+
     use standx_point_adapter::RequestSigner;
     use standx_point_adapter::http::signature::{
         HEADER_REQUEST_ID, HEADER_REQUEST_SIGNATURE, HEADER_REQUEST_TIMESTAMP,

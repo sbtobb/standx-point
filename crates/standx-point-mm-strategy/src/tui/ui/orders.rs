@@ -29,11 +29,7 @@ fn parse_optional_bps(raw: &Option<String>) -> Option<Decimal> {
     }
 
     let bps = Decimal::from_str(value).ok()?;
-    if bps > Decimal::ZERO {
-        Some(bps)
-    } else {
-        None
-    }
+    if bps > Decimal::ZERO { Some(bps) } else { None }
 }
 
 fn default_sl_multiplier(level: &str) -> Decimal {
