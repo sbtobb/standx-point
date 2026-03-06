@@ -1,6 +1,7 @@
 /*
-[INPUT]:  `watch::Receiver<SymbolPrice>` (mark price), `StandxClient` for order placement,
-          and `OrderTracker` updates (ack/fills/cancels via external WS reconciliation).
+[INPUT]:  `watch::Receiver<SymbolPrice>` (mark price), `watch::Receiver<Decimal>` (position qty),
+          `StandxClient` for order placement, and `OrderTracker` updates (ack/fills/cancels via
+          external WS reconciliation).
 [OUTPUT]: PostOnly limit orders (bid+ask ladder) kept in sync with mark price,
           plus uptime accounting for reward eligibility.
 [POS]:    Strategy layer - conservative market making core loop.
@@ -10,6 +11,7 @@
 [UPDATE]: 2026-02-07 Replace quotes when bps exits safety band.
 [UPDATE]: 2026-02-07 Budget reflects total bid+ask notional.
 [UPDATE]: 2026-02-09 Gate replace on cancel ack with reconcile fallback.
+[UPDATE]: 2026-03-06 Sync inventory from authoritative position updates.
 */
 
 use std::collections::{HashMap, HashSet};
@@ -335,6 +337,7 @@ pub struct MarketMakingStrategy {
     min_order_qty: Option<Decimal>,
     max_order_qty: Option<Decimal>,
     price_rx: watch::Receiver<SymbolPrice>,
+    position_rx: watch::Receiver<Decimal>,
     order_tracker: Arc<Mutex<OrderTracker>>,
     risk_manager: RiskManager,
     uptime_tracker: UptimeTracker,
@@ -360,6 +363,8 @@ impl MarketMakingStrategy {
     pub fn new() -> Self {
         let (tx, rx) = watch::channel(initial_symbol_price(""));
         drop(tx);
+        let (position_tx, position_rx) = watch::channel(Decimal::ZERO);
+        drop(position_tx);
         let (reconcile_tx, _reconcile_rx) = mpsc::unbounded_channel();
 
         let now = tokio::time::Instant::now();
@@ -377,6 +382,7 @@ impl MarketMakingStrategy {
             min_order_qty: None,
             max_order_qty: None,
             price_rx: rx,
+            position_rx,
             order_tracker: Arc::new(Mutex::new(OrderTracker::new())),
             risk_manager: RiskManager::new(),
             uptime_tracker: UptimeTracker::new(now),
@@ -403,6 +409,7 @@ impl MarketMakingStrategy {
         tp_bps: Option<Decimal>,
         sl_bps: Option<Decimal>,
         price_rx: watch::Receiver<SymbolPrice>,
+        position_rx: watch::Receiver<Decimal>,
         order_tracker: Arc<Mutex<OrderTracker>>,
         order_reconcile_tx: mpsc::UnboundedSender<OrderReconcileRequest>,
         mode: StrategyMode,
@@ -429,6 +436,7 @@ impl MarketMakingStrategy {
             min_order_qty: None,
             max_order_qty: None,
             price_rx,
+            position_rx,
             order_tracker,
             risk_manager: RiskManager::new(),
             uptime_tracker: UptimeTracker::new(now),
@@ -546,6 +554,14 @@ impl MarketMakingStrategy {
                         self.refresh_from_latest(executor, tokio::time::Instant::now()).await?;
                     }
                 }
+                changed = self.position_rx.changed() => {
+                    if changed.is_err() {
+                        continue;
+                    }
+
+                    self.sync_inventory_from_position();
+                    self.refresh_from_latest(executor, tokio::time::Instant::now()).await?;
+                }
                 _ = heartbeat.tick() => {
                     let snapshot = self.uptime_snapshot();
                     if let Some(metrics) = self.metrics.as_ref() {
@@ -616,6 +632,21 @@ impl MarketMakingStrategy {
         self.update_backoff_for_timers(now);
     }
 
+    fn sync_inventory_from_position(&mut self) {
+        let actual_position_qty = *self.position_rx.borrow();
+        if actual_position_qty == self.inventory_qty {
+            return;
+        }
+
+        info!(
+            symbol = %self.symbol,
+            old_inventory_qty = %self.inventory_qty,
+            actual_position_qty = %actual_position_qty,
+            "inventory synced from authoritative position"
+        );
+        self.inventory_qty = actual_position_qty;
+    }
+
     async fn handle_fills(&mut self, now: tokio::time::Instant) -> Result<()> {
         let mut filled_slots = Vec::new();
 
@@ -651,7 +682,12 @@ impl MarketMakingStrategy {
                     QuoteSide::Bid => quote.qty,
                     QuoteSide::Ask => -quote.qty,
                 };
-                self.inventory_qty += signed_qty;
+                let actual_position_qty = *self.position_rx.borrow();
+                if actual_position_qty != self.inventory_qty {
+                    self.inventory_qty = actual_position_qty;
+                } else {
+                    self.inventory_qty += signed_qty;
+                }
             }
             self.apply_fill_backoff(slot.side, now);
             self.live_quotes.remove(&slot);
@@ -1550,6 +1586,12 @@ mod tests {
         tx
     }
 
+    fn position_receiver(initial_qty: Decimal) -> watch::Receiver<Decimal> {
+        let (tx, rx) = watch::channel(initial_qty);
+        drop(tx);
+        rx
+    }
+
     #[derive(Debug, Default)]
     struct MockExecutor {
         new_orders: tokio::sync::Mutex<Vec<NewOrderRequest>>,
@@ -1636,6 +1678,7 @@ mod tests {
             None,
             None,
             rx,
+            position_receiver(Decimal::ONE),
             Arc::new(Mutex::new(OrderTracker::new())),
             reconcile_tx(),
             StrategyMode::aggressive_default(),
@@ -1703,6 +1746,7 @@ mod tests {
             None,
             None,
             rx,
+            position_receiver(Decimal::ONE),
             Arc::new(Mutex::new(OrderTracker::new())),
             reconcile_tx(),
             StrategyMode::aggressive_default(),
@@ -1762,6 +1806,7 @@ mod tests {
             None,
             None,
             rx,
+            position_receiver(Decimal::ZERO),
             tracker,
             reconcile_tx(),
             StrategyMode::aggressive_default(),
@@ -1803,6 +1848,7 @@ mod tests {
             None,
             None,
             rx,
+            position_receiver(dec("10")),
             Arc::new(Mutex::new(OrderTracker::new())),
             reconcile_tx(),
             StrategyMode::aggressive_default(),
@@ -1844,6 +1890,7 @@ mod tests {
             None,
             None,
             rx,
+            position_receiver(Decimal::ONE),
             tracker.clone(),
             reconcile_tx(),
             StrategyMode::aggressive_default(),
@@ -1956,6 +2003,7 @@ mod tests {
             None,
             None,
             rx,
+            position_receiver(Decimal::ONE),
             tracker.clone(),
             reconcile_tx(),
             StrategyMode::aggressive_default(),
@@ -2104,6 +2152,7 @@ mod tests {
             None,
             None,
             rx,
+            position_receiver(Decimal::ONE),
             Arc::new(Mutex::new(OrderTracker::new())),
             reconcile_tx(),
             StrategyMode::aggressive_default(),
@@ -2122,5 +2171,108 @@ mod tests {
             .unwrap();
 
         assert_eq!(executor.new_order_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn strategy_syncs_inventory_from_authoritative_position() {
+        let (_tx, rx) = watch::channel(SymbolPrice {
+            base: "BTC".to_string(),
+            index_price: dec("100"),
+            last_price: None,
+            mark_price: dec("100"),
+            mid_price: None,
+            quote: "USD".to_string(),
+            spread_ask: None,
+            spread_bid: None,
+            symbol: "BTC-USD".to_string(),
+            time: "0".to_string(),
+        });
+        let (position_tx, position_rx) = watch::channel(dec("10"));
+
+        let mut strategy = MarketMakingStrategy::new_with_params(
+            "BTC-USD".to_string(),
+            dec("1000"),
+            RiskLevel::Low,
+            None,
+            None,
+            rx,
+            position_rx,
+            Arc::new(Mutex::new(OrderTracker::new())),
+            reconcile_tx(),
+            StrategyMode::aggressive_default(),
+            5,
+            dec("10"),
+        );
+
+        strategy.inventory_qty = dec("12");
+        position_tx.send(Decimal::ZERO).unwrap();
+        strategy.sync_inventory_from_position();
+
+        assert_eq!(strategy.inventory_qty, Decimal::ZERO);
+    }
+
+    #[tokio::test]
+    async fn strategy_restores_bilateral_quotes_after_position_reset() {
+        let (_tx, rx) = watch::channel(SymbolPrice {
+            base: "BTC".to_string(),
+            index_price: dec("100"),
+            last_price: None,
+            mark_price: dec("100"),
+            mid_price: None,
+            quote: "USD".to_string(),
+            spread_ask: None,
+            spread_bid: None,
+            symbol: "BTC-USD".to_string(),
+            time: "0".to_string(),
+        });
+        let (position_tx, position_rx) = watch::channel(dec("10"));
+
+        let executor = MockExecutor::default();
+        let mut strategy = MarketMakingStrategy::new_with_params(
+            "BTC-USD".to_string(),
+            dec("1000"),
+            RiskLevel::Low,
+            None,
+            None,
+            rx,
+            position_rx,
+            Arc::new(Mutex::new(OrderTracker::new())),
+            reconcile_tx(),
+            StrategyMode::aggressive_default(),
+            5,
+            dec("10"),
+        );
+
+        strategy
+            .refresh_from_latest(&executor, tokio::time::Instant::now())
+            .await
+            .unwrap();
+
+        assert!(
+            strategy
+                .live_quotes
+                .keys()
+                .all(|slot| slot.side == QuoteSide::Ask)
+        );
+
+        position_tx.send(Decimal::ZERO).unwrap();
+        strategy.sync_inventory_from_position();
+        strategy
+            .refresh_from_latest(&executor, tokio::time::Instant::now())
+            .await
+            .unwrap();
+
+        assert!(
+            strategy
+                .live_quotes
+                .keys()
+                .any(|slot| slot.side == QuoteSide::Bid)
+        );
+        assert!(
+            strategy
+                .live_quotes
+                .keys()
+                .any(|slot| slot.side == QuoteSide::Ask)
+        );
     }
 }

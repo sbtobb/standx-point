@@ -33,14 +33,12 @@ use uuid::Uuid;
 
 use crate::cli::interactive::build_strategy_config;
 use crate::state::storage::{Account as StoredAccount, Storage, Task as StoredTask};
-use crate::tui::LogBufferHandle;
 use crate::tui::runtime::LIVE_REFRESH_INTERVAL;
 use crate::tui::ui::modal::{CreateAccountModal, CreateTaskModal};
 
 #[allow(dead_code)]
 pub(super) enum AppMode {
     Dashboard,
-    LogsTab,
     CreateAccount,
     CreateTask,
 }
@@ -53,7 +51,6 @@ pub(super) enum ActiveModal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Tab {
     Dashboard,
-    Logs,
     Create,
 }
 
@@ -95,7 +92,6 @@ impl LiveTaskData {
 pub(super) struct AppState {
     pub(super) storage: Arc<Storage>,
     pub(super) task_manager: Arc<TokioMutex<TaskManager>>,
-    pub(super) log_buffer: LogBufferHandle,
     pub(super) accounts: Vec<StoredAccount>,
     pub(super) tasks: Vec<StoredTask>,
     pub(super) list_state: ListState,
@@ -108,17 +104,12 @@ pub(super) struct AppState {
 }
 
 impl AppState {
-    pub(super) fn new(
-        storage: Arc<Storage>,
-        task_manager: Arc<TokioMutex<TaskManager>>,
-        log_buffer: LogBufferHandle,
-    ) -> Self {
+    pub(super) fn new(storage: Arc<Storage>, task_manager: Arc<TokioMutex<TaskManager>>) -> Self {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
         Self {
             storage,
             task_manager,
-            log_buffer,
             accounts: Vec::new(),
             tasks: Vec::new(),
             list_state,
@@ -186,8 +177,7 @@ impl AppState {
 
     pub(super) fn next_tab(&mut self) {
         self.current_tab = match self.current_tab {
-            Tab::Dashboard => Tab::Logs,
-            Tab::Logs => Tab::Create,
+            Tab::Dashboard => Tab::Create,
             Tab::Create => Tab::Dashboard,
         };
     }

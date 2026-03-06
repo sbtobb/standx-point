@@ -65,23 +65,20 @@ enum Commands {
 async fn main() -> Result<()> {
     let args = Cli::parse();
     if let Some(Commands::Init { output }) = args.command {
-        init_tracing(&args.log_level, None, true)?;
+        init_tracing(&args.log_level, true)?;
         return cli::init::run_init(output);
     }
 
     if let Some(Commands::Migrate) = args.command {
-        init_tracing(&args.log_level, None, true)?;
+        init_tracing(&args.log_level, true)?;
         return run_migrations().await;
     }
 
     if args.tui {
-        let log_buffer = std::sync::Arc::new(std::sync::Mutex::new(tui::LogBuffer::new(
-            tui::LOG_BUFFER_CAPACITY,
-        )));
-        init_tracing(&args.log_level, Some(log_buffer.clone()), false)?;
-        run_tui_mode(log_buffer).await
+        init_tracing(&args.log_level, false)?;
+        run_tui_mode().await
     } else {
-        init_tracing(&args.log_level, None, true)?;
+        init_tracing(&args.log_level, true)?;
         run_cli_mode(args.config, args.env, args.dry_run).await
     }
 }
@@ -176,11 +173,7 @@ async fn run_cli_mode(config_path: Option<PathBuf>, env_mode: bool, dry_run: boo
     Ok(())
 }
 
-fn init_tracing(
-    log_level: &str,
-    tui_log: Option<tui::LogBufferHandle>,
-    enable_stdout: bool,
-) -> Result<()> {
+fn init_tracing(log_level: &str, enable_stdout: bool) -> Result<()> {
     let filter = EnvFilter::try_new(log_level).context("invalid log level")?;
     let log_dir = std::env::current_dir()
         .context("resolve current directory")?
@@ -198,23 +191,16 @@ fn init_tracing(
             .with_ansi(true)
             .with_filter(filter.clone())
     });
-    let tui_layer = tui_log.map(|buffer| {
-        tracing_subscriber::fmt::layer()
-            .with_writer(tui::LogWriterFactory::new(buffer))
-            .with_ansi(false)
-            .with_filter(filter)
-    });
     tracing_subscriber::registry()
         .with(file_layer)
         .with(stdout_layer)
-        .with(tui_layer)
         .try_init()
         .map_err(|err| anyhow!(err))
         .context("initialize tracing subscriber")?;
     Ok(())
 }
 
-async fn run_tui_mode(log_buffer: tui::LogBufferHandle) -> Result<()> {
+async fn run_tui_mode() -> Result<()> {
     let market_data_hub = Arc::new(Mutex::new(MarketDataHub::new()));
     let task_manager = Arc::new(Mutex::new(TaskManager::with_market_data_hub(
         market_data_hub.clone(),
@@ -223,10 +209,9 @@ async fn run_tui_mode(log_buffer: tui::LogBufferHandle) -> Result<()> {
     let shutdown = { task_manager.lock().await.shutdown_token() };
     setup_signal_handlers(shutdown.clone());
 
-    tui::run_tui_with_log(
+    tui::run_tui(
         task_manager.clone(),
         Arc::new(state::storage::Storage::new().await?),
-        log_buffer,
     )
     .await?;
 

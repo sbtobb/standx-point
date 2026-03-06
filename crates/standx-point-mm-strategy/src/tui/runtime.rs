@@ -1,6 +1,6 @@
 /*
-[INPUT]:  Stored tasks, TaskManager runtime snapshots, log buffer, and account/order snapshots
-[OUTPUT]: Ratatui-based TUI run loop, rendering, and log buffer utilities
+[INPUT]:  Stored tasks, TaskManager runtime snapshots, and account/order snapshots
+[OUTPUT]: Ratatui-based TUI run loop and rendering helpers
 [POS]:    TUI runtime loop and shared helpers
 [UPDATE]: When changing TUI layout, keybindings, or runtime controls
 [UPDATE]: 2026-02-09 Refactor layout and palette for account/positions/orders
@@ -13,10 +13,7 @@
 [UPDATE]: 2026-02-10 Render active modal overlay in TUI draw loop
 */
 
-use std::collections::VecDeque;
-use std::io::{self, Write};
 use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -29,7 +26,6 @@ use rust_decimal::Decimal;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing_subscriber::fmt::MakeWriter;
 
 use standx_point_adapter::{
     Chain, Credentials, Order, OrderStatus, PaginatedOrders, StandxClient, StandxError,
@@ -47,90 +43,6 @@ use crate::state::storage::{Account as StoredAccount, Storage};
 const UI_TICK_INTERVAL: Duration = Duration::from_millis(250);
 const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(200);
 pub(crate) const LIVE_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
-pub(crate) const LOG_BUFFER_CAPACITY: usize = 2000;
-
-pub type LogBufferHandle = Arc<StdMutex<LogBuffer>>;
-
-#[derive(Debug, Default)]
-pub struct LogBuffer {
-    lines: VecDeque<String>,
-    capacity: usize,
-}
-
-impl LogBuffer {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            lines: VecDeque::new(),
-            capacity,
-        }
-    }
-
-    pub fn push_line(&mut self, line: String) {
-        if self.capacity == 0 {
-            return;
-        }
-        if self.lines.len() >= self.capacity {
-            self.lines.pop_front();
-        }
-        self.lines.push_back(line);
-    }
-
-    pub fn snapshot(&self) -> Vec<String> {
-        self.lines.iter().cloned().collect()
-    }
-}
-
-#[derive(Clone)]
-pub struct LogWriterFactory {
-    buffer: LogBufferHandle,
-}
-
-impl LogWriterFactory {
-    pub fn new(buffer: LogBufferHandle) -> Self {
-        Self { buffer }
-    }
-}
-
-pub struct LogWriter {
-    buffer: LogBufferHandle,
-    partial: String,
-}
-
-impl Write for LogWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let chunk = String::from_utf8_lossy(buf);
-        self.partial.push_str(&chunk);
-        while let Some(pos) = self.partial.find('\n') {
-            let line = self.partial[..pos].trim_end_matches('\r').to_string();
-            self.partial = self.partial[pos + 1..].to_string();
-            let buffer = self.buffer.clone();
-            let mut guard = buffer.lock().expect("log buffer lock");
-            guard.push_line(line);
-        }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        if !self.partial.is_empty() {
-            let line = std::mem::take(&mut self.partial);
-            let buffer = self.buffer.clone();
-            let mut guard = buffer.lock().expect("log buffer lock");
-            guard.push_line(line);
-        }
-        Ok(())
-    }
-}
-
-impl<'a> MakeWriter<'a> for LogWriterFactory {
-    type Writer = LogWriter;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        LogWriter {
-            buffer: self.buffer.clone(),
-            partial: String::new(),
-        }
-    }
-}
 
 enum UiEvent {
     Input(CrosstermEvent),
@@ -146,7 +58,7 @@ pub(super) fn draw_footer(frame: &mut ratatui::Frame, area: ratatui::layout::Rec
         Span::raw(" Select  "),
         Span::styled("[Tab/l]", key_style),
         Span::raw(" Switch  "),
-        Span::styled("[1/2/3]", key_style),
+        Span::styled("[1/2]", key_style),
         Span::raw(" Tabs  "),
         Span::styled("[a]", key_style),
         Span::raw(" Account  "),
@@ -266,10 +178,9 @@ pub(crate) async fn query_open_orders_with_fallback(
     Ok(open_orders)
 }
 
-pub async fn run_tui_with_log(
+pub async fn run_tui(
     task_manager: Arc<TokioMutex<TaskManager>>,
     storage: Arc<Storage>,
-    log_buffer: LogBufferHandle,
 ) -> Result<()> {
     let mut terminal = TerminalGuard::new()?;
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
@@ -286,7 +197,7 @@ pub async fn run_tui_with_log(
         }
     });
 
-    let mut app = AppState::new(storage, task_manager, log_buffer);
+    let mut app = AppState::new(storage, task_manager);
     app.refresh_accounts().await?;
     app.refresh_tasks().await?;
 
@@ -361,9 +272,6 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut AppState, snapshot: &UiSnapshot
                 .split(middle[1]);
             draw_positions_table(frame, right[0], app);
             draw_open_orders_table(frame, right[1], app);
-        }
-        Tab::Logs => {
-            draw_logs(frame, layout[0], &app.log_buffer);
         }
         Tab::Create => {
             let block = Block::default()

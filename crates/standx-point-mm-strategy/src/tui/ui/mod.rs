@@ -9,7 +9,6 @@
 
 mod account;
 mod layout;
-mod logs;
 mod orders;
 mod positions;
 mod task_list;
@@ -18,7 +17,6 @@ pub mod modal;
 
 pub(in crate::tui) use account::draw_account_summary;
 pub(in crate::tui) use layout::draw_tabs;
-pub(in crate::tui) use logs::draw_logs;
 pub(in crate::tui) use orders::draw_open_orders_table;
 pub(in crate::tui) use positions::draw_positions_table;
 pub(in crate::tui) use task_list::draw_task_list;

@@ -3,7 +3,7 @@
 [OUTPUT]: TUI event routing (placeholder)
 [POS]:    TUI event module placeholder
 [UPDATE]: 2026-02-09 Add placeholder module for TUI refactor
-[UPDATE]: 2026-02-09 Extract key handling match logic from run_tui_with_log
+[UPDATE]: 2026-02-09 Extract key handling match logic from TUI runtime
 [UPDATE]: 2026-02-09 Add tab switching hotkeys
 [UPDATE]: 2026-02-10 Wire modal input handling and submission
 */
@@ -66,10 +66,6 @@ pub(super) async fn handle_key_event(app: &mut AppState, key: KeyCode) -> bool {
             false
         }
         KeyCode::Char('2') => {
-            app.set_tab(Tab::Logs);
-            false
-        }
-        KeyCode::Char('3') => {
             app.set_tab(Tab::Create);
             false
         }
